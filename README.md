@@ -14,8 +14,17 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
 ```
 
 ## How the robot thinks
-- **Feedback loop:** By default, `feedback = after_plan` executes the planned steps without a model call between successful actions. Unity still checks each action; the model is asked again if a step fails or the plan finishes. Use `--feedback every_step` for visual checking after every action.
-- **Limits:** at most 25 actions per command, and it recovers from at most 5 failed steps or unusable replies before stopping politely.
+- **Feedback loop:** By default, `feedback = after_plan` executes the planned steps without a model call between successful actions. Unity still checks each action; the model is asked again if a step fails, if the plan reaches a step it cannot run yet, or if the plan ends with the goal not reached. Use `--feedback every_step` for visual checking after every action.
+- **The model states the goal, the world checks it:** every reply carries a `goal`, the task as checkable facts
+  (`{"object": "gold_medal", "in": "trophy_cabinet"}`, `{"holding": "soccer_ball"}`, `{"closed": "trophy_cabinet"}`).
+  Understanding the user's words is the model's job; the bridge only compares that goal with the world data Unity
+  sends (`facts`). There are no keyword rules about commands in the bridge, so synonyms and new phrasings need no code.
+- **Find first, then act:** a plan may contain search steps followed by steps for a thing not seen yet
+  (`look_around`, `explore locker_room_a`, `pick gold_medal`). Steps naming an unseen object wait; the search stops
+  and the plan continues the moment that exact id is seen. `explore <room>` is repeated until the room is searched.
+- **No walking into certain failures:** before a step runs the bridge checks the world data: hand already full,
+  container closed, locker locked without the key in the hand. Such a plan goes back to the model with the reason.
+- **Limits:** at most 40 actions per command, and it recovers from at most 5 failed steps or unusable replies before stopping politely.
 - **Seen-only knowledge:** an object becomes known only once it is really visible in the eye or overhead camera (in view, not
   blocked, at least 4 pixels big). Rooms and doors are always known. The locker rooms are roofed, so the overhead camera can't see into them.
 - **Exploring:** `explore` searches the most likely place: opens a room's door, walks in and looks around, opens its lockers one by
@@ -25,9 +34,9 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
   asks you instead of looping when a locked locker's key hasn't been seen, when the model proposes the step that just
   failed again, after 3 failed actions in a row (`STUCK_AFTER`), or after two unusable model replies. Your answer
   continues the same task.
-- **"Done" is checked:** before the robot may say it is finished, the bridge compares the task with the state lines
-  (is the named object where it was asked to go, is it the right object, is the cabinet closed again). A wrong
-  "done" is refused with the reason; after three the robot reports a failure instead of a success.
+- **"Done" is checked:** the robot may say it is finished only when every entry of the goal holds in the world
+  data. A wrong "done" is refused with the reason; after three the robot reports a failure instead of a success.
+  When a plan ends and the goal holds, the task finishes at once, without another model call.
 - **No loops:** the bridge also refuses a question you have already answered and a `move_to`/`open`/`close` that
   just succeeded, and tells the model to move on.
 - **Model comparison:** `EVALUATION.md` compares Qwen3-VL 8B and Llama 3.2 Vision 11B on eight end-to-end tasks
@@ -72,7 +81,7 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
 | `{"action":"pick","target":"X"}` | X is parented to the robot's hand |
 | `{"action":"place","target":"Y"}` | held object goes into a free slot on Y (a rack picks a free shelf) |
 | `{"action":"open"/"close","target":"Y"}` | Y's door hinge rotates; a locked locker opens only with its key in hand |
-| `{"action":"explore","target":"Y"}` | one search step in room Y / at furniture Y (target optional) |
+| `{"action":"explore","target":"Y"}` | one search step in room Y / at furniture Y (target optional); the bridge repeats it for a room until the room is searched |
 | `{"action":"look_around"}` | turns a full circle |
 | `{"action":"rotate","degrees":N}` | robot turns in place |
 | `{"action":"wait","seconds":N}` | pause |
