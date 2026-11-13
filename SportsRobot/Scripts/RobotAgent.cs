@@ -212,8 +212,27 @@ public class RobotAgent : MonoBehaviour
     }
 
     bool Reachable(Interactable t) =>
-        NavMesh.SamplePosition(t.ApproachFrom(transform.position), out var hit, 1.5f, NavMesh.AllAreas)
+        NavMesh.SamplePosition(Goal(t), out var hit, 1.5f, NavMesh.AllAreas)
         && nav.CalculatePath(hit.position, path) && path.status == NavMeshPathStatus.PathComplete;
+
+    // Where to stand for t. A door has a spot on each side: take the one the robot can actually walk to
+    // (the nearest in a straight line may be behind the closed door itself), preferring the shorter walk.
+    Vector3 Goal(Interactable t)
+    {
+        Vector3 best = t.ApproachFrom(transform.position);
+        if (t.ContainedIn || !t.approachPoint || !t.approachPointBack) return best;
+        float bestLength = float.MaxValue;
+        foreach (var side in new[] { t.approachPoint.position, t.approachPointBack.position })
+        {
+            if (!NavMesh.SamplePosition(side, out var hit, 1.5f, NavMesh.AllAreas) ||
+                !nav.CalculatePath(hit.position, path) || path.status != NavMeshPathStatus.PathComplete) continue;
+            float length = 0f;
+            var corners = path.corners;
+            for (int i = 1; i < corners.Length; i++) length += Vector3.Distance(corners[i - 1], corners[i]);
+            if (length < bestLength) { bestLength = length; best = side; }
+        }
+        return best;
+    }
 
     Interactable Nearest(IEnumerable<Interactable> options) =>
         options.OrderBy(i => FlatDistance(i.ApproachFrom(transform.position))).FirstOrDefault();
@@ -234,7 +253,7 @@ public class RobotAgent : MonoBehaviour
     IEnumerator MoveTo(Interactable t, Action<string> fail)
     {
         ResetEye();
-        Vector3 goal = t.ApproachFrom(transform.position);
+        Vector3 goal = Goal(t);
         if (!NavMesh.SamplePosition(goal, out var hit, 1.5f, NavMesh.AllAreas) ||
             !nav.CalculatePath(hit.position, path) || path.status != NavMeshPathStatus.PathComplete)
         {
@@ -257,7 +276,7 @@ public class RobotAgent : MonoBehaviour
     IEnumerator EnsureNear(Interactable t, Action<string> fail)
     {
         bool near = FlatDistance(t.transform.position) <= reachDistance
-                 || FlatDistance(t.ApproachFrom(transform.position)) <= 0.6f;
+                 || FlatDistance(Goal(t)) <= 0.6f;
         if (near) yield return Face(t.transform.position);
         else yield return MoveTo(t, fail);
     }

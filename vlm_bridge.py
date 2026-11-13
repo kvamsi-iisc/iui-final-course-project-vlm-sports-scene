@@ -37,6 +37,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MAX_STEPS = 25       # actions per command
 MAX_FAILURES = 5     # failed steps or unusable replies we recover from before giving up
+STUCK_AFTER = 3      # failed actions in a row before the robot stops trying and asks the user what to do
 
 OLLAMA_MODELS = {"qwen": "qwen3-vl:8b-instruct", "llama": "llama3.2-vision:11b"}
 
@@ -93,14 +94,18 @@ Rules:
    explore until it shows up in KNOWN OBJECTS.
 2. The robot holds one thing at a time. Place what it holds before picking up something else.
 3. Open a closed locker or cabinet before taking things out or putting things in. A locked locker ("locked, needs X")
-   opens only while the robot holds X: find and pick up X first, then open the locker. The key stays in the lock.
+   opens only while the robot holds X. If X is in KNOWN OBJECTS, fetch it first, then open the locker (the key stays
+   in the lock). If X is NOT known yet, don't start searching on your own: return status "ask", say what is locked
+   and which key is missing, and ask whether the user knows where it is or wants you to search. Then do what they answer.
 4. A closed door blocks the way into its room; open it first.
 5. Use the state lines and the images to check that the last step worked. When the whole task is finished,
    return status "done" with an empty plan.
 6. If the instruction could mean more than one known object and the images don't settle it (for example "the red
    dumbbell" when two red dumbbells are known), return status "ask" with a short question and an empty plan.
    Don't ask when only one object fits.
-7. If a step failed, read the error and do something different. Never repeat a step that just failed unchanged.
+7. If a step failed, read the error and try ONE different step that fixes the cause. Never repeat a step that just
+   failed unchanged. If you can't see a step that fixes it, return status "ask" and ask the user what to do.
+   Don't ask about things you can simply do (opening a closed door or locker, walking closer).
 8. If the task can't be done (the object still isn't found after exploring, or it makes no sense), return status
    "impossible" with an empty plan and say why.
 
@@ -486,6 +491,9 @@ class Task:
         self.failures = 0
         self.question = None     # waiting for the user's answer
         self.plan = []           # remaining planned steps (used in after_plan mode)
+        self.streak = 0          # failed actions in a row
+        self.blocked = {}        # step -> error, for steps that failed since the last success or user answer
+        self.asked = set()       # missing keys the user has already been asked about
         self.current = None      # the action Unity is running
 
 
@@ -506,6 +514,8 @@ class Brain:
             if kind == "answer" and self.task and self.task.question:
                 self.task.answers.append((self.task.question, text))
                 self.task.question = None
+                self.task.streak = 0          # the user's answer is new information: earlier dead ends may work now
+                self.task.blocked.clear()
             else:
                 self.task = Task(text)
             return self.decide(obs)
@@ -515,30 +525,58 @@ class Brain:
                 return self.msg("done", error="got a result but no task is running")
             t.steps += 1
             line = show(t.current)
+            error = ""
             if obs.get("ok", True):
                 line += " -> ok"
                 if obs.get("note"):
                     line += f" ({obs['note']})"
+                t.streak = 0
+                t.blocked.clear()
             else:
-                line += f" -> FAILED: {obs.get('error', 'unknown error')}"
+                error = str(obs.get("error") or "unknown error")
+                line += f" -> FAILED: {error}"
                 t.failures += 1
+                t.streak += 1
+                t.blocked[show(t.current)] = error
                 t.plan = []
             if obs.get("newly_seen"):
                 line += f"; newly seen: {', '.join(obs['newly_seen'])}"
             t.history.append(line)
             t.current = None
-            return self.decide(obs, last_ok=bool(obs.get("ok", True)))
+            return self.decide(obs, last_ok=not error, last_error=error)
         return self.msg("done", error=f"unknown message type '{kind}'")
 
-    def decide(self, obs, last_ok=False):
+    def blocker(self, t, known, error):
+        """A question for the user when the robot is blocked and shouldn't keep trying on its own, else None.
+        It may fix an obvious problem itself, but a missing key or repeated dead ends go straight to the user."""
+        key = re.search(r"is locked; it needs (\w+)", error)
+        if key and norm(key.group(1)) not in {norm(k) for k in known} and key.group(1) not in t.asked:
+            t.asked.add(key.group(1))
+            return (f"{error.split(';')[0].strip().capitalize()} and I haven't seen {key.group(1)} yet. "
+                    f"Do you know where it is, or should I search for it?")
+        if t.streak >= STUCK_AFTER:
+            return f"I'm stuck after {t.streak} tries. The last problem: {error}. What should I do?"
+        return None
+
+    def ask(self, question, raw=""):
+        self.task.question = question
+        return self.msg("ask", reply=question, raw=raw)
+
+    def decide(self, obs, last_ok=False, last_error=""):
         t = self.task
         known = obs.get("known") or []
+        rejected = 0
         while True:
             if t.steps >= MAX_STEPS:
                 return self.finish("fail", f"I used all {MAX_STEPS} actions without finishing, so I'm stopping here.")
             if t.failures > MAX_FAILURES:
                 return self.finish("fail", f"I ran into {t.failures} problems in a row and can't find a way to "
                                            f"finish this, so I'm stopping.")
+
+            question = last_error and self.blocker(t, known, last_error)
+            last_error = ""
+            if question:
+                return self.ask(question)
 
             if self.feedback == "after_plan" and last_ok and t.plan:
                 step, err = clean_step(t.plan[0], {norm(k): k for k in known})
@@ -560,6 +598,9 @@ class Brain:
                 t.history.append(f"(your last reply was rejected: {r['error']})")
                 self.log(f"rejected reply: {r['error']}\n  raw: {raw}")
                 last_ok = False
+                rejected += 1
+                if rejected >= 2:   # don't keep the user waiting while the model flounders
+                    return self.ask("I'm not sure what to do next. Can you tell me the next step, or say it another way?", raw=raw)
                 continue
 
             if r["status"] == "ask":
@@ -568,6 +609,11 @@ class Brain:
             if r["status"] in ("done", "impossible"):
                 default = "Done." if r["status"] == "done" else "I can't do that."
                 return self.finish("done" if r["status"] == "done" else "fail", r["reply"] or default, raw=raw)
+
+            repeat = t.blocked.get(show(r["plan"][0]))
+            if repeat:   # the same step that just failed, with nothing changed since: ask instead of looping
+                t.failures += 1
+                return self.ask(f"I'm stuck: {repeat}. What should I do?", raw=raw)
 
             t.plan = r["plan"][1:]
             return self.act(r["plan"][0], reply=r["reply"], raw=raw)
@@ -778,15 +824,51 @@ def selftest():
     m = b.handle({**obs, "type": "answer", "text": "the small one"})
     assert m["kind"] == "act" and b.task.answers == [("Small or large?", "the small one")], m
 
-    # failures: give up after MAX_FAILURES recoveries
-    b = Brain(lambda s, p, i: json.dumps({"plan": [{"action": "open", "target": "ball_rack"}]}), log=quiet)
+    # stuck: proposing the step that just failed again makes the robot ask the user instead of looping
+    calls = []
+    def stubborn(system, prompt, images):
+        calls.append(prompt)
+        return json.dumps({"plan": [{"action": "open", "target": "ball_rack"}]})
+    b = Brain(stubborn, log=quiet)
     m = b.handle({**obs, "type": "command", "text": "open the rack"})
-    for _ in range(MAX_FAILURES):
-        assert m["kind"] == "act", m
-        m = b.handle({**obs, "type": "result", "ok": False, "error": "ball_rack can't be opened"})
     assert m["kind"] == "act", m
     m = b.handle({**obs, "type": "result", "ok": False, "error": "ball_rack can't be opened"})
+    assert m["kind"] == "ask" and "ball_rack can't be opened" in m["reply"] and len(calls) == 2, m
+    # ... the answer clears the dead end, so the step may be tried again; in the end the failure limit still applies
+    while m["kind"] == "ask":
+        m = b.handle({**obs, "type": "answer", "text": "try again"})
+        if m["kind"] == "act":
+            m = b.handle({**obs, "type": "result", "ok": False, "error": "ball_rack can't be opened"})
     assert m["kind"] == "fail" and m["failures"] == MAX_FAILURES + 1, m
+
+    # stuck: a locked locker whose key hasn't been seen is asked about at once, without another model call
+    calls.clear()
+    lock = {**obs, "known": ["locker_5", "main_hall"]}
+    b = Brain(lambda s, p, i: calls.append(p) or json.dumps({"plan": [{"action": "open", "target": "locker_5"}]}), log=quiet)
+    m = b.handle({**lock, "type": "command", "text": "open locker 5"})
+    m = b.handle({**lock, "type": "result", "ok": False, "error": "locker_5 is locked; it needs locker_key"})
+    assert m["kind"] == "ask" and "locker_key" in m["reply"] and len(calls) == 1, (m, len(calls))
+    # ... but when the key is already known the robot goes on by itself
+    b = Brain(scripted({"plan": [{"action": "open", "target": "locker_5"}]},
+                       {"plan": [{"action": "pick", "target": "locker_key"}]}), log=quiet)
+    seen = {**lock, "known": lock["known"] + ["locker_key"]}
+    m = b.handle({**seen, "type": "command", "text": "open locker 5"})
+    m = b.handle({**seen, "type": "result", "ok": False, "error": "locker_5 is locked; it needs locker_key"})
+    assert m["kind"] == "act" and m["next"]["target"] == "locker_key", m
+
+    # stuck: several different steps failing in a row also end in a question
+    plans = iter([{"plan": [{"action": a, "target": "ball_rack"}]} for a in ("open", "close", "pick", "place")])
+    b = Brain(lambda s, p, i: json.dumps(next(plans)), log=quiet)
+    m = b.handle({**obs, "type": "command", "text": "do something with the rack"})
+    for n in range(STUCK_AFTER):
+        assert m["kind"] == "act", (n, m)
+        m = b.handle({**obs, "type": "result", "ok": False, "error": "that didn't work"})
+    assert m["kind"] == "ask" and "that didn't work" in m["reply"], m
+
+    # two unusable replies in a row: ask the user rather than keep them waiting
+    b = Brain(lambda s, p, i: "no json here", log=quiet)
+    m = b.handle({**obs, "type": "command", "text": "tidy up"})
+    assert m["kind"] == "ask" and m["failures"] == 2, m
 
     # step cap
     b = Brain(lambda s, p, i: json.dumps({"plan": [{"action": "rotate", "degrees": 90}]}), log=quiet)
