@@ -21,6 +21,10 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
 - **Exploring:** `explore` searches the most likely place: opens a room's door, walks in and looks around, opens its lockers one by
   one, or looks closely at a shelf or cart. The model can aim it at a room or piece of furniture.
 - **Asking back:** if a command fits more than one object ("the red dumbbell"), it asks you; your next message is the answer.
+- **Stuck → ask:** the robot may fix an obvious problem itself (open a closed door, fetch a key it has seen), but it
+  asks you instead of looping when a locked locker's key hasn't been seen, when the model proposes the step that just
+  failed again, after 3 failed actions in a row (`STUCK_AFTER`), or after two unusable model replies. Your answer
+  continues the same task.
 - **Stop:** type `stop` while it works; it stops after the current step.
 - The raw VLM JSON of every turn is shown in the log, next to live thumbnails of exactly what the model sees.
 
