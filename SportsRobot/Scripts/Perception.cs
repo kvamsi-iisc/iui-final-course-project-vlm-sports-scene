@@ -79,6 +79,13 @@ public class Perception : MonoBehaviour
         }
     }
 
+    // The robot has just stood in front of this place and looked into it: count it as checked even when its
+    // middle is outside the picture because the eye is tilted down at the floor of a locker.
+    public void MarkInspected(Interactable i)
+    {
+        if (i && CanCheckInside(i)) inspected.Add(i.partOf ? i.partOf : i);
+    }
+
     static bool CanCheckInside(Interactable i) => !i.openable || i.IsOpen || i.seeThrough;
 
     bool Visible(Camera cam, Interactable it)

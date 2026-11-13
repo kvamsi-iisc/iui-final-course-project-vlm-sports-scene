@@ -127,3 +127,54 @@ on the first try against 100 % in the final run.
 `run_eval.py` (runs the scenarios) and `analyze.py` (produces `evaluation/results.json`). The paths inside them point
 at the scratch Unity project used for this run and need adjusting before re-use. `evaluation/traces/` contains one
 `.jsonl` trace and one final-state `.json` per run.
+
+## 9. Follow-up: Qwen after the "done" verification fixes
+
+After the comparison above, the weaknesses listed in section 7 were addressed for Qwen and its eight scenarios
+were run again. Llama was not re-run. Traces are in `evaluation/traces_after_fixes/`.
+
+**What was added**
+
+| Change | Effect |
+|---|---|
+| The bridge checks the state lines before accepting "done" | "put X in Y" needs X's state to say it is in or on Y; "pick up X" needs the robot to be holding X |
+| A named, numbered thing that has not been seen blocks "done" | "locker 5" can no longer be swapped for locker 3 |
+| The object put away must be the kind of thing asked for | Putting the gold trophy away for "the gold medal" is refused and the model is sent to find the medal |
+| A cabinet opened during the task must be closed before "done" | The bottle task now ends with the cabinet closed |
+| Plain permission questions ("Should I open it?") are answered yes for the user | Fewer needless interruptions |
+| A place with an empty hand tells the model where the task's object is | Helps after the robot set something down to free its hand |
+| A locker the robot has looked into counts as checked | `explore` moves on to the next locker instead of revisiting one |
+| After three wrong "done" claims the robot reports failure | A wrong success can no longer be the final answer for these cases |
+
+**Result**
+
+| | Before (section 2, all 8 tasks) | After the fixes |
+|---|---|---|
+| Tasks completed correctly | 6 of 8 | **7 of 8** |
+| False "done" reports | 2 | **0** |
+| Model calls for the 8 tasks | 32 | 48 |
+| Total time for the 8 tasks | 16.9 min | 29.3 min |
+| Robot actions that failed | 1 of 66 | 4 of 86 |
+
+| Task | Before | After |
+|---|---|---|
+| 1–3, 5 | Pass | Pass (within a few seconds of the earlier times) |
+| 4 bottle in the trophy cabinet | Pass, cabinet left open (63 s) | Pass, cabinet closed (98 s) |
+| 6 swimming goggles | Pass | Pass |
+| 7 gold medal | False "done" with the gold trophy | **Pass.** The trophy was refused, Qwen fetched the real medal and closed the cabinet (394 s, 11 calls). The trophy stays in the cabinet as a side effect |
+| 8 blue dumbbell in locker 5 | False "done", dumbbell in locker 3 | Honest failure. Qwen found locker 5, fetched the key, opened the locker, then ran out of the 25-action limit while going back for the dumbbell it had set down |
+
+The extra calls and time come mainly from tasks 7 and 8 now being carried through instead of ending early with a
+wrong success. Response time per call was 30.7 s on average in this run against 25.5 s before; the machine had
+less free memory (35 % against 70 % at the start), so the two latency figures are not a like-for-like comparison.
+
+**Still open**
+
+- Task 8 does not complete. It needs about 25 actions the way Qwen does it (it searches the wrong locker room first
+  and carries the dumbbell the whole way), which is the action limit.
+- If the model says "done" before the object named in the task has ever been seen, and nothing was put away, the
+  bridge has nothing to check against.
+- One run per scenario; Qwen's behaviour on task 8 differed across four attempts.
+- Tasks 1–5 and 7 were run just before two last small bridge changes (guard nudges no longer count towards the
+  problem limit; the empty-hand hint). Those changes only act after an empty-hand place or near the problem limit,
+  which none of those six runs reached; task 6 and task 8 were run after them.

@@ -477,6 +477,62 @@ def parse_reply(raw, known_ids):
     return out
 
 
+# ---------------------------------------------------------------- checking "done" against the world state
+
+PUT_WORDS = re.compile(r"\b(put|place|store|leave|drop|return|move)\b")
+GET_WORDS = re.compile(r"\b(pick up|hand me|bring me|give me|fetch|grab)\b")
+PERMISSION = re.compile(r"^(do you want me to|would you like me to|should i|shall i|can i|may i)\b")
+
+
+def named_in(command, known):
+    """Known ids whose words appear together in the command ("gold medal" -> gold_medal), in command order,
+    plus numbered things the command names that haven't been seen yet ("locker 5" while locker_1 is known)."""
+    words = re.findall(r"[a-z0-9]+", command.lower())
+    found = []
+    for k in known:
+        tokens = norm(k).split("_")
+        for i in range(len(words) - len(tokens) + 1):
+            if words[i:i + len(tokens)] == tokens:
+                found.append((i, len(tokens), k))
+                break
+    # "trophy cabinet" names the cabinet, not also something called "trophy": the longer name wins.
+    found = [f for f in found if not any(g is not f and g[0] <= f[0] and f[0] + f[1] <= g[0] + g[1] and g[1] > f[1] for g in found)]
+    names = {norm(k) for k in known}
+    missing = [f"{w}_{n}" for w, n in zip(words, words[1:])
+               if n.isdigit() and f"{w}_{n}" not in names and any(re.fullmatch(rf"{re.escape(w)}_\d+", k) for k in names)]
+    return [k for _, _, k in sorted(found)], missing
+
+
+def unfinished(command, obs, opened, placed=()):
+    """Why the task can't be called done yet, judged from the state lines rather than the model's word; else None."""
+    known = obs.get("known") or []
+    state = {line.split(" ", 1)[0]: line for line in obs.get("states") or []}
+    named, missing = named_in(command, known)
+    if missing:
+        return (f"the task names {missing[0]}, which is not in KNOWN OBJECTS yet. Find it by exploring the places under "
+                f"NOT EXPLORED YET; never use a different one in its place")
+    text = command.lower()
+    if PUT_WORDS.search(text) and placed and placed[-1][0]:
+        # The thing that was put away must be the kind of thing the user asked for: a trophy is not a medal.
+        item = placed[-1][0]
+        where = list(re.finditer(r"\b(in|into|on|onto|inside)\b", text))
+        asked = text[:where[-1].start()] if where else ""
+        kind = [w for w in norm(item).split("_") if not w.isdigit()][-1]
+        if asked and not re.search(rf"\b{re.escape(kind)}(s|es)?\b", asked):
+            return (f"you put away {item}, but the task asks for something else (\"{asked.strip()}\"). {item} is a different "
+                    f"object. Find the object the task names: explore the places under NOT EXPLORED YET, including locked lockers")
+    if PUT_WORDS.search(text) and len(named) >= 2 and state.get(named[0]):
+        item, dest = named[0], named[-1]
+        if not re.search(rf"\b(in|on) {re.escape(dest)}(_\w+)?\b|, {re.escape(dest)}\)?$", state[item]):
+            return f"{item} is not in or on {dest} yet. Its state is: {state[item]}"
+    elif GET_WORDS.search(text) and len(named) == 1 and norm(obs.get("holding") or "") != norm(named[0]):
+        return f"the robot is not holding {named[0]}. It is holding: {obs.get('holding') or 'nothing'}"
+    for thing in opened:
+        if re.match(rf"{re.escape(thing)} \(cabinet\b.*\bopen\b", state.get(thing, "")):
+            return f"{thing} is still open; close it before finishing"
+    return None
+
+
 def show(action):
     if action["action"] == "rotate":
         return f"rotate {action['degrees']:g} deg"
@@ -500,6 +556,10 @@ class Task:
         self.blocked = {}        # step -> error, for steps that failed since the last success or user answer
         self.asked = set()       # missing keys the user has already been asked about
         self.just_done = None    # the step that succeeded last turn, to catch a model that repeats it for no reason
+        self.opened = []         # things opened during this task (a cabinet must be closed again before "done")
+        self.carrying = ""       # what the robot held after the last action
+        self.placed = []         # (item, target) for every successful place in this task
+        self.unconfirmed = 0     # times the model said "done" while the state lines said otherwise
         self.current = None      # the action Unity is running
 
 
@@ -539,6 +599,10 @@ class Brain:
                 t.streak = 0
                 t.blocked.clear()
                 t.just_done = show(t.current)
+                if t.current["action"] == "open" and t.current.get("target") not in t.opened:
+                    t.opened.append(t.current["target"])
+                if t.current["action"] == "place":
+                    t.placed.append((t.carrying, t.current.get("target", "")))
             else:
                 t.just_done = None
                 error = str(obs.get("error") or "unknown error")
@@ -547,6 +611,13 @@ class Brain:
                 t.streak += 1
                 t.blocked[show(t.current)] = error
                 t.plan = []
+                if error == "not holding anything":
+                    # The model lost track of an object it set down earlier: point at where that object is now.
+                    named = named_in(t.command, obs.get("known") or [])[0]
+                    states = {l.split(" ", 1)[0]: l for l in obs.get("states") or []}
+                    where = f" The task's object is: {states[named[0]]}." if named and named[0] in states else ""
+                    line += f" (the hand is empty: pick up the object first, then place it.{where})"
+            t.carrying = obs.get("holding") or ""
             if obs.get("newly_seen"):
                 line += f"; newly seen: {', '.join(obs['newly_seen'])}"
             t.history.append(line)
@@ -613,9 +684,15 @@ class Brain:
 
             if r["status"] == "ask":
                 question = r["question"] or r["reply"]
+                if PERMISSION.match(question.strip().lower()) and " or " not in question.lower() and rejected < 2:
+                    # "Should I open it?" is not a real question: the user asked for the task, so the answer is yes.
+                    rejected += 1
+                    t.history.append(f'(you asked "{question}". Yes: go ahead and do it. Never ask permission for '
+                                     f"something you can simply do.)")
+                    last_ok = False
+                    continue
                 answered = next((ans for q, ans in t.answers if norm(q) == norm(question)), None)
                 if answered is not None:   # asking again what the user already answered would loop forever
-                    t.failures += 1
                     t.history.append(f'(you already asked "{question}" and the user answered "{answered}". '
                                      f"Don't ask it again: act on that answer now.)")
                     last_ok = False
@@ -624,6 +701,16 @@ class Brain:
                         return self.ask("I'm not sure what to do next. Can you tell me the next step, or say it another way?", raw=raw)
                     continue
                 return self.ask(question, raw=raw)
+            if r["status"] == "done":
+                why = unfinished(t.command, obs, t.opened, t.placed)
+                if why:   # the model says done, the world says otherwise: never report a success that isn't one
+                    t.unconfirmed += 1
+                    if t.unconfirmed > 2:
+                        return self.finish("fail", f"I couldn't finish this: {why}.", raw=raw)
+                    t.history.append(f"(you said done, but the task is NOT finished: {why}. Continue with the steps that fix this.)")
+                    self.log(f"done rejected: {why}")
+                    last_ok = False
+                    continue
             if r["status"] in ("done", "impossible"):
                 default = "Done." if r["status"] == "done" else "I can't do that."
                 return self.finish("done" if r["status"] == "done" else "fail", r["reply"] or default, raw=raw)
@@ -631,7 +718,6 @@ class Brain:
             first = r["plan"][0]
             if first["action"] in ("move_to", "open", "close") and show(first) == t.just_done:
                 # The step just succeeded and doing it again changes nothing: a model stuck on a no-op.
-                t.failures += 1
                 t.history.append(f"(you proposed '{show(first)}' again, but it already succeeded and repeating it "
                                  f"changes nothing. Give the NEXT step of the task, or status done if it is finished.)")
                 self.log(f"rejected no-op repeat: {show(first)}")
@@ -832,7 +918,7 @@ def selftest():
     assert m["kind"] == "act" and m["next"]["target"] == "basketball", m
     m = b.handle({**obs, "type": "result", "ok": True})
     assert m["kind"] == "act" and m["next"]["action"] == "pick" and m["step"] == 1, m
-    m = b.handle({**obs, "type": "result", "ok": True})
+    m = b.handle({**obs, "type": "result", "ok": True, "holding": "basketball"})
     assert m["kind"] == "done" and m["reply"] == "Got it.", m
 
     # unknown target -> rejected, counted, and the model is asked again with the reason
@@ -897,14 +983,14 @@ def selftest():
 
     # a question the user already answered is not asked again; the model is told to act on the answer
     seen_prompts = []
-    replies = iter([{"status": "ask", "question": "Should I explore locker_room_b?", "plan": []},
-                    {"status": "ask", "question": "Should I explore locker_room_b?", "plan": []},
+    replies = iter([{"status": "ask", "question": "Which locker room is locker 5 in?", "plan": []},
+                    {"status": "ask", "question": "Which locker room is locker 5 in?", "plan": []},
                     {"status": "working", "plan": [{"action": "look_around"}]}])
     b = Brain(lambda s, p, i: seen_prompts.append(p) or json.dumps(next(replies)), log=quiet)
     m = b.handle({**obs, "type": "command", "text": "put the dumbbell in locker 5"})
     assert m["kind"] == "ask", m
-    m = b.handle({**obs, "type": "answer", "text": "yes, go ahead"})
-    assert m["kind"] == "act" and "already asked" in seen_prompts[-1] and "yes, go ahead" in seen_prompts[-1], m
+    m = b.handle({**obs, "type": "answer", "text": "locker room b"})
+    assert m["kind"] == "act" and "already asked" in seen_prompts[-1] and "locker room b" in seen_prompts[-1], m
 
     # a step that just succeeded is not run again: the model is told to move on (it was looping on a no-op)
     seen_prompts = []
@@ -914,6 +1000,53 @@ def selftest():
     m = b.handle({**obs, "type": "command", "text": "put the basketball on the rack"})
     m = b.handle({**obs, "type": "result", "ok": True})
     assert m["kind"] == "act" and m["next"]["action"] == "place" and "already succeeded" in seen_prompts[-1], m
+
+    # "done" is checked against the state lines: the trophy is not the medal, locker 3 is not locker 5
+    medal = {**obs, "known": ["gold_medal", "gold_trophy", "trophy_cabinet", "locker_5", "main_hall"],
+             "states": ["gold_medal (medal; in locker_5)", "gold_trophy (trophy; in trophy_cabinet_top)",
+                        "trophy_cabinet (cabinet; closed; in equipment storage)", "locker_5 (locker; open)"]}
+    seen_prompts = []
+    replies = iter([{"status": "done", "reply": "The gold medal is in the trophy cabinet.", "plan": []},
+                    {"status": "working", "plan": [{"action": "pick", "target": "gold_medal"}]}])
+    b = Brain(lambda s, p, i: seen_prompts.append(p) or json.dumps(next(replies)), log=quiet)
+    m = b.handle({**medal, "type": "command", "text": "get the gold medal and put it in the trophy cabinet"})
+    assert m["kind"] == "act" and m["next"]["target"] == "gold_medal" and "NOT finished" in seen_prompts[-1], m
+    placed = {**medal, "states": ["gold_medal (medal; in trophy_cabinet_top)"] + medal["states"][1:]}
+    assert unfinished("get the gold medal and put it in the trophy cabinet", placed, []) is None
+    assert "still open" in unfinished("put the gold medal in the trophy cabinet",
+                                      {**placed, "states": placed["states"][:2] + ["trophy_cabinet (cabinet; open)"]}, ["trophy_cabinet"])
+    lockers = {**obs, "known": ["blue_dumbbell", "locker_1", "locker_3"], "states": ["blue_dumbbell (dumbbell; in locker_3)"]}
+    assert "locker_5" in unfinished("put the blue dumbbell in locker 5", lockers, [])
+    assert "not holding soccer_ball" in unfinished("pick up the soccer ball", {**obs, "known": ["soccer_ball"], "holding": ""}, [])
+    assert unfinished("pick up the soccer ball", {**obs, "known": ["soccer_ball"], "holding": "soccer_ball"}, []) is None
+    assert unfinished("put the basketball on the ball rack", {**obs, "states": ["basketball (ball; on ball_rack_bottom)"]}, []) is None
+    assert named_in("get the gold medal and put it in the trophy cabinet", medal["known"])[0] == ["gold_medal", "trophy_cabinet"]
+    # the medal has never been seen, the trophy went into the cabinet instead: that is not what was asked for
+    unseen = {**obs, "known": ["gold_trophy", "trophy_cabinet"], "states": ["gold_trophy (trophy; in trophy_cabinet_top)"]}
+    why = unfinished("get the gold medal and put it in the trophy cabinet", unseen, [], [("gold_trophy", "trophy_cabinet_top")])
+    assert why and "gold_trophy" in why and "different object" in why, why
+    balls = "put all three tennis balls on the top shelf of the ball rack"
+    assert unfinished(balls, {**obs, "known": ["ball_rack"]}, [], [("tennis_ball_2", "ball_rack_top")]) is None
+    # ... and a model that keeps claiming success ends in an honest failure, not a false "done"
+    b = Brain(lambda s, p, i: json.dumps({"status": "done", "reply": "Placed in locker 5.", "plan": []}), log=quiet)
+    m = b.handle({**lockers, "type": "command", "text": "put the blue dumbbell in locker 5"})
+    assert m["kind"] == "fail" and "locker_5" in m["reply"], m
+
+    # a plain permission question is answered with yes on the user's behalf
+    replies = iter([{"status": "ask", "question": "Do you want me to open locker_2 and retrieve the locker_key?", "plan": []},
+                    {"status": "working", "plan": [{"action": "look_around"}]}])
+    b = Brain(lambda s, p, i: json.dumps(next(replies)), log=quiet)
+    m = b.handle({**obs, "type": "command", "text": "find the key"})
+    assert m["kind"] == "act", m
+
+    # placing with an empty hand: the next prompt says where the task's object is now
+    seen_prompts = []
+    replies = iter([{"plan": [{"action": "place", "target": "locker_5"}]}, {"plan": [{"action": "pick", "target": "blue_dumbbell"}]}])
+    b = Brain(lambda s, p, i: seen_prompts.append(p) or json.dumps(next(replies)), log=quiet)
+    bench = {**obs, "known": ["blue_dumbbell", "locker_5", "bench"], "states": ["blue_dumbbell (dumbbell; on bench)"]}
+    m = b.handle({**bench, "type": "command", "text": "put the blue dumbbell in locker 5"})
+    m = b.handle({**bench, "type": "result", "ok": False, "error": "not holding anything"})
+    assert m["kind"] == "act" and "blue_dumbbell (dumbbell; on bench)" in seen_prompts[-1], m
 
     # two unusable replies in a row: ask the user rather than keep them waiting
     b = Brain(lambda s, p, i: "no json here", log=quiet)
