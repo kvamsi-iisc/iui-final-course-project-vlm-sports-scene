@@ -89,11 +89,14 @@ Steps:
   {"action": "wait", "seconds": <number>}
 
 Rules:
-1. Use ids EXACTLY as written in KNOWN OBJECTS. Never invent an id. If the thing you need isn't known yet, explore
-   where it is most likely (balls: storage wall and ball cart; personal things, keys, medals: lockers) and repeat
-   explore until it shows up in KNOWN OBJECTS.
+1. Use ids EXACTLY as written in KNOWN OBJECTS. Never invent an id. If the thing you need isn't known yet (an
+   object, or a named place such as "locker 5"), it is probably somewhere under NOT EXPLORED YET: explore where it
+   is most likely (balls: storage wall and ball cart; personal things, keys, medals: lockers; lockers: BOTH locker
+   rooms) and repeat explore until it shows up in KNOWN OBJECTS. Exploring needs no permission: don't ask first.
+   Never use a different object in place of the one asked for (a trophy is not a medal).
 2. The robot holds one thing at a time. Place what it holds before picking up something else.
-3. Open a closed locker or cabinet before taking things out or putting things in. A locked locker ("locked, needs X")
+3. Open a closed locker or cabinet before taking things out or putting things in, and close a cabinet again when
+   you are finished with it. A locked locker ("locked, needs X")
    opens only while the robot holds X. If X is in KNOWN OBJECTS, fetch it first, then open the locker (the key stays
    in the lock). If X is NOT known yet, don't start searching on your own: return status "ask", say what is locked
    and which key is missing, and ask whether the user knows where it is or wants you to search. Then do what they answer.
@@ -105,7 +108,9 @@ Rules:
    Don't ask when only one object fits.
 7. If a step failed, read the error and try ONE different step that fixes the cause. Never repeat a step that just
    failed unchanged. If you can't see a step that fixes it, return status "ask" and ask the user what to do.
-   Don't ask about things you can simply do (opening a closed door or locker, walking closer).
+   Don't ask about things you can simply do (opening a closed door or locker, walking closer, exploring), and
+   never ask a question the user has already answered. After a step succeeds, go on to the NEXT step of the task;
+   repeating a step that already succeeded changes nothing.
 8. If the task can't be done (the object still isn't found after exploring, or it makes no sense), return status
    "impossible" with an empty plan and say why.
 
@@ -494,6 +499,7 @@ class Task:
         self.streak = 0          # failed actions in a row
         self.blocked = {}        # step -> error, for steps that failed since the last success or user answer
         self.asked = set()       # missing keys the user has already been asked about
+        self.just_done = None    # the step that succeeded last turn, to catch a model that repeats it for no reason
         self.current = None      # the action Unity is running
 
 
@@ -532,7 +538,9 @@ class Brain:
                     line += f" ({obs['note']})"
                 t.streak = 0
                 t.blocked.clear()
+                t.just_done = show(t.current)
             else:
+                t.just_done = None
                 error = str(obs.get("error") or "unknown error")
                 line += f" -> FAILED: {error}"
                 t.failures += 1
@@ -604,12 +612,34 @@ class Brain:
                 continue
 
             if r["status"] == "ask":
-                t.question = r["question"] or r["reply"]
-                return self.msg("ask", reply=t.question, raw=raw)
+                question = r["question"] or r["reply"]
+                answered = next((ans for q, ans in t.answers if norm(q) == norm(question)), None)
+                if answered is not None:   # asking again what the user already answered would loop forever
+                    t.failures += 1
+                    t.history.append(f'(you already asked "{question}" and the user answered "{answered}". '
+                                     f"Don't ask it again: act on that answer now.)")
+                    last_ok = False
+                    rejected += 1
+                    if rejected >= 2:
+                        return self.ask("I'm not sure what to do next. Can you tell me the next step, or say it another way?", raw=raw)
+                    continue
+                return self.ask(question, raw=raw)
             if r["status"] in ("done", "impossible"):
                 default = "Done." if r["status"] == "done" else "I can't do that."
                 return self.finish("done" if r["status"] == "done" else "fail", r["reply"] or default, raw=raw)
 
+            first = r["plan"][0]
+            if first["action"] in ("move_to", "open", "close") and show(first) == t.just_done:
+                # The step just succeeded and doing it again changes nothing: a model stuck on a no-op.
+                t.failures += 1
+                t.history.append(f"(you proposed '{show(first)}' again, but it already succeeded and repeating it "
+                                 f"changes nothing. Give the NEXT step of the task, or status done if it is finished.)")
+                self.log(f"rejected no-op repeat: {show(first)}")
+                last_ok = False
+                rejected += 1
+                if rejected >= 2:
+                    return self.ask("I'm not sure what to do next. Can you tell me the next step, or say it another way?", raw=raw)
+                continue
             repeat = t.blocked.get(show(r["plan"][0]))
             if repeat:   # the same step that just failed, with nothing changed since: ask instead of looping
                 t.failures += 1
@@ -864,6 +894,26 @@ def selftest():
         assert m["kind"] == "act", (n, m)
         m = b.handle({**obs, "type": "result", "ok": False, "error": "that didn't work"})
     assert m["kind"] == "ask" and "that didn't work" in m["reply"], m
+
+    # a question the user already answered is not asked again; the model is told to act on the answer
+    seen_prompts = []
+    replies = iter([{"status": "ask", "question": "Should I explore locker_room_b?", "plan": []},
+                    {"status": "ask", "question": "Should I explore locker_room_b?", "plan": []},
+                    {"status": "working", "plan": [{"action": "look_around"}]}])
+    b = Brain(lambda s, p, i: seen_prompts.append(p) or json.dumps(next(replies)), log=quiet)
+    m = b.handle({**obs, "type": "command", "text": "put the dumbbell in locker 5"})
+    assert m["kind"] == "ask", m
+    m = b.handle({**obs, "type": "answer", "text": "yes, go ahead"})
+    assert m["kind"] == "act" and "already asked" in seen_prompts[-1] and "yes, go ahead" in seen_prompts[-1], m
+
+    # a step that just succeeded is not run again: the model is told to move on (it was looping on a no-op)
+    seen_prompts = []
+    replies = iter([{"plan": [{"action": "move_to", "target": "ball_rack"}]}, {"plan": [{"action": "move_to", "target": "ball_rack"}]},
+                    {"plan": [{"action": "place", "target": "ball_rack"}]}])
+    b = Brain(lambda s, p, i: seen_prompts.append(p) or json.dumps(next(replies)), feedback="every_step", log=quiet)
+    m = b.handle({**obs, "type": "command", "text": "put the basketball on the rack"})
+    m = b.handle({**obs, "type": "result", "ok": True})
+    assert m["kind"] == "act" and m["next"]["action"] == "place" and "already succeeded" in seen_prompts[-1], m
 
     # two unusable replies in a row: ask the user rather than keep them waiting
     b = Brain(lambda s, p, i: "no json here", log=quiet)

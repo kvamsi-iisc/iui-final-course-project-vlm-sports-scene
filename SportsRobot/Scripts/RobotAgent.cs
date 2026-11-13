@@ -119,7 +119,10 @@ public class RobotAgent : MonoBehaviour
         bool hasKey = held && held.id == t.keyId;
         if (open && t.locked && !hasKey) { fail($"{t.id} is locked; it needs {t.keyId}"); yield break; }
         bool failed = false;
-        yield return EnsureNear(t, e => { failed = true; fail(e); });
+        // Lockers and cabinets are opened from straight in front, so the robot ends up looking into them
+        // rather than past the open door of the locker next to it.
+        if (t.kind == "door") yield return EnsureNear(t, e => { failed = true; fail(e); });
+        else yield return EnsureInFront(t, e => { failed = true; fail(e); });
         if (failed) yield break;
         if (open && t.locked) { held.InsertInLock(t); held = null; }
         yield return t.SetOpen(open);
@@ -183,7 +186,7 @@ public class RobotAgent : MonoBehaviour
             if (!failed) note($"opened {spot.id} to look inside");
             yield break;
         }
-        yield return EnsureNear(spot, e => { failed = true; fail(e); });
+        yield return EnsureInFront(spot, e => { failed = true; fail(e); });
         if (failed) yield break;
         AimEye(spot.placePoint ? spot.placePoint.position : Middle(spot));
         yield return new WaitForSeconds(0.3f);
@@ -278,6 +281,13 @@ public class RobotAgent : MonoBehaviour
         bool near = FlatDistance(t.transform.position) <= reachDistance
                  || FlatDistance(Goal(t)) <= 0.6f;
         if (near) yield return Face(t.transform.position);
+        else yield return MoveTo(t, fail);
+    }
+
+    // Stricter than EnsureNear: stand on the object's own approach spot, facing it.
+    IEnumerator EnsureInFront(Interactable t, Action<string> fail)
+    {
+        if (FlatDistance(Goal(t)) <= 0.45f) yield return Face(t.transform.position);
         else yield return MoveTo(t, fail);
     }
 
