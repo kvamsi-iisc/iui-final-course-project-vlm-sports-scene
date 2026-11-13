@@ -1,0 +1,357 @@
+{
+ "qwen": {
+  "rows": [
+   {
+    "scenario": "s1_soccer",
+    "command": "pick up the soccer ball",
+    "success": true,
+    "detail": "holding soccer_ball",
+    "outcome": "done",
+    "seconds": 75,
+    "model_calls": 2,
+    "latencies": [
+     35.64,
+     33.83
+    ],
+    "actions": 2,
+    "failed_actions": 0,
+    "minimal": 2,
+    "rejected_replies": 0,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "The soccer ball has been picked up.",
+    "errors": [],
+    "plan": [
+     "move_to soccer_ball",
+     "pick soccer_ball"
+    ]
+   },
+   {
+    "scenario": "s2_basketball",
+    "command": "put the basketball on the ball rack",
+    "success": true,
+    "detail": "basketball on ball_rack_bottom",
+    "outcome": "done",
+    "seconds": 68,
+    "model_calls": 2,
+    "latencies": [
+     21.8,
+     35.37
+    ],
+    "actions": 4,
+    "failed_actions": 0,
+    "minimal": 4,
+    "rejected_replies": 0,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "The basketball is now on the ball rack.",
+    "errors": [],
+    "plan": [
+     "move_to basketball",
+     "pick basketball",
+     "move_to ball_rack",
+     "place ball_rack"
+    ]
+   },
+   {
+    "scenario": "s3_dumbbell",
+    "command": "hand me the red dumbbell (ambiguous)",
+    "success": true,
+    "detail": "holding large_red_dumbbell, 1 question(s)",
+    "outcome": "done",
+    "seconds": 122,
+    "model_calls": 4,
+    "latencies": [
+     21.93,
+     23.58,
+     36.24,
+     33.59
+    ],
+    "actions": 3,
+    "failed_actions": 0,
+    "minimal": 2,
+    "rejected_replies": 0,
+    "model_errors": 0,
+    "questions_model": [
+     "Do you want the small or the large red dumbbell?"
+    ],
+    "questions_bridge": [],
+    "qa": [
+     {
+      "question": "Do you want the small or the large red dumbbell?",
+      "answer": "The large one."
+     }
+    ],
+    "final_reply": "I have the large red dumbbell ready for you.",
+    "errors": [],
+    "plan": [
+     "move_to dumbbell_rack",
+     "explore dumbbell_rack",
+     "pick large_red_dumbbell"
+    ]
+   },
+   {
+    "scenario": "s4_bottle",
+    "command": "put the blue water bottle in the trophy cabinet",
+    "success": true,
+    "detail": "bottle in trophy_cabinet_top, cabinet closed",
+    "outcome": "done",
+    "seconds": 98,
+    "model_calls": 4,
+    "latencies": [
+     31.21,
+     27.66,
+     2.84,
+     29.02
+    ],
+    "actions": 6,
+    "failed_actions": 0,
+    "minimal": 6,
+    "rejected_replies": 1,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "The blue water bottle is now in the trophy cabinet and the cabinet is closed.",
+    "errors": [],
+    "plan": [
+     "move_to blue_water_bottle",
+     "pick blue_water_bottle",
+     "move_to trophy_cabinet",
+     "open trophy_cabinet",
+     "place trophy_cabinet_top",
+     "close trophy_cabinet"
+    ]
+   },
+   {
+    "scenario": "s5_tennis",
+    "command": "put all three tennis balls on the top shelf of the ball rack",
+    "success": true,
+    "detail": "3/3 balls on ball_rack_top",
+    "outcome": "done",
+    "seconds": 110,
+    "model_calls": 3,
+    "latencies": [
+     20.66,
+     37.64,
+     33.54
+    ],
+    "actions": 13,
+    "failed_actions": 0,
+    "minimal": 13,
+    "rejected_replies": 0,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "All three tennis balls are now on the top shelf of the ball rack.",
+    "errors": [],
+    "plan": [
+     "move_to ball_cart",
+     "explore ball_cart",
+     "pick tennis_ball_1",
+     "move_to ball_rack_top",
+     "place ball_rack_top",
+     "move_to ball_cart",
+     "pick tennis_ball_2",
+     "move_to ball_rack_top",
+     "place ball_rack_top",
+     "move_to ball_cart",
+     "pick tennis_ball_3",
+     "move_to ball_rack_top",
+     "place ball_rack_top"
+    ]
+   },
+   {
+    "scenario": "s6_goggles",
+    "command": "bring me the swimming goggles (impossible)",
+    "success": true,
+    "detail": "said impossible",
+    "outcome": "stopped",
+    "seconds": 325,
+    "model_calls": 8,
+    "latencies": [
+     23.19,
+     36.14,
+     49.46,
+     52.09,
+     48.13,
+     7.22,
+     6.89,
+     44.53
+    ],
+    "actions": 13,
+    "failed_actions": 1,
+    "minimal": null,
+    "rejected_replies": 1,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "Swimming goggles are not in the known objects or in the locker rooms. I cannot find them.",
+    "errors": [
+     "locker_5 is locked; it needs locker_key"
+    ],
+    "plan": [
+     "explore locker_room_a",
+     "explore locker_room_a",
+     "explore locker_1",
+     "explore locker_2",
+     "explore locker_3",
+     "move_to locker_room_b_door",
+     "open locker_room_b_door",
+     "explore locker_room_b",
+     "open locker_5",
+     "pick locker_key",
+     "move_to locker_5",
+     "open locker_5",
+     "explore locker_5"
+    ]
+   },
+   {
+    "scenario": "s7_medal",
+    "command": "get the gold medal and put it in the trophy cabinet",
+    "success": true,
+    "detail": "medal in trophy_cabinet_top",
+    "outcome": "done",
+    "seconds": 394,
+    "model_calls": 11,
+    "latencies": [
+     20.72,
+     27.18,
+     33.39,
+     32.45,
+     35.25,
+     39.5,
+     34.46,
+     6.78,
+     35.44,
+     5.1,
+     36.17
+    ],
+    "actions": 20,
+    "failed_actions": 0,
+    "minimal": null,
+    "rejected_replies": 2,
+    "model_errors": 0,
+    "questions_model": [],
+    "questions_bridge": [],
+    "qa": [],
+    "final_reply": "The gold medal has been placed in the trophy cabinet and the cabinet is now closed.",
+    "errors": [],
+    "plan": [
+     "explore locker_room_a",
+     "explore locker_room_a",
+     "explore locker_1",
+     "explore locker_2",
+     "explore locker_3",
+     "move_to locker_room_b_door",
+     "open locker_room_b_door",
+     "explore locker_room_b",
+     "move_to locker_2",
+     "pick locker_key",
+     "move_to locker_5",
+     "open locker_5",
+     "pick gold_trophy",
+     "move_to trophy_cabinet",
+     "open trophy_cabinet",
+     "place trophy_cabinet_top",
+     "pick gold_medal",
+     "move_to trophy_cabinet",
+     "place trophy_cabinet_top",
+     "close trophy_cabinet"
+    ]
+   },
+   {
+    "scenario": "s8_locked",
+    "command": "put the blue dumbbell in locker 5 (locked)",
+    "success": false,
+    "detail": "dumbbell in bench",
+    "outcome": "stopped",
+    "seconds": 566,
+    "model_calls": 14,
+    "latencies": [
+     15.29,
+     37.95,
+     51.68,
+     42.07,
+     7.01,
+     13.92,
+     3.51,
+     48.26,
+     47.47,
+     8.03,
+     51.68,
+     52.93,
+     50.84,
+     46.04
+    ],
+    "actions": 25,
+    "failed_actions": 3,
+    "minimal": null,
+    "rejected_replies": 3,
+    "model_errors": 0,
+    "questions_model": [
+     "Is locker 5 in locker_room_b or another room? Should I explore locker_room_b to find it?"
+    ],
+    "questions_bridge": [],
+    "qa": [
+     {
+      "question": "Is locker 5 in locker_room_b or another room? Should I explore locker_room_b to find it?",
+      "answer": "Yes, go ahead."
+     }
+    ],
+    "final_reply": "I used all 25 actions without finishing, so I'm stopping here.",
+    "errors": [
+     "locker_5 is locked; it needs locker_key",
+     "already holding blue_dumbbell; put it down first (place it on a bench, shelf or mat nearby), then pick this up",
+     "not holding anything"
+    ],
+    "plan": [
+     "move_to blue_mat",
+     "pick blue_dumbbell",
+     "move_to locker_room_a_door",
+     "open locker_room_a_door",
+     "explore locker_room_a",
+     "move_to locker_1",
+     "open locker_1",
+     "explore locker_1",
+     "move_to locker_2",
+     "open locker_2",
+     "explore locker_2",
+     "move_to locker_3",
+     "open locker_3",
+     "explore locker_3",
+     "explore locker_room_b",
+     "move_to locker_5",
+     "open locker_5",
+     "move_to locker_2",
+     "pick locker_key",
+     "place bench",
+     "pick locker_key",
+     "open locker_5",
+     "move_to locker_5",
+     "place locker_5",
+     "move_to blue_dumbbell"
+    ]
+   }
+  ],
+  "summary": {
+   "scenarios": 8,
+   "passed": 7,
+   "latency_mean": 30.7,
+   "latency_median": 33.7,
+   "latency_p90": 49.5,
+   "latency_max": 52.9,
+   "model_calls": 48,
+   "valid_first_try_pct": 85.4,
+   "actions": 86,
+   "failed_actions": 4,
+   "total_minutes": 29.3
+  }
+ }
+}

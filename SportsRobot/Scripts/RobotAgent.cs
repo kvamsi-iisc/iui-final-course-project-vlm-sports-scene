@@ -59,7 +59,7 @@ public class RobotAgent : MonoBehaviour
                 break;
 
             case "pick":
-                if (held) { Fail($"already holding {held.id}; place it first"); yield break; }
+                if (held) { Fail($"already holding {held.id}; put it down first (place it on a bench, shelf or mat nearby), then pick this up"); yield break; }
                 if (!t.pickable) { Fail($"{t.id} can't be picked up"); yield break; }
                 if (t.ContainedIn && t.ContainedIn.IsShut) { Fail($"{t.ContainedIn.Enclosure.id} is closed"); yield break; }
                 yield return EnsureNear(t, Fail);
@@ -183,14 +183,18 @@ public class RobotAgent : MonoBehaviour
         if (spot.openable && !spot.IsOpen && !spot.seeThrough)
         {
             yield return OpenClose(spot, true, e => { failed = true; fail(e); });
-            if (!failed) note($"opened {spot.id} to look inside");
+            if (!failed)
+            {
+                note($"opened {spot.id} to look inside");
+                if (perception) { perception.Scan(); perception.MarkInspected(spot); }
+            }
             yield break;
         }
         yield return EnsureInFront(spot, e => { failed = true; fail(e); });
         if (failed) yield break;
         AimEye(spot.placePoint ? spot.placePoint.position : Middle(spot));
         yield return new WaitForSeconds(0.3f);
-        if (perception) perception.Scan();
+        if (perception) { perception.Scan(); perception.MarkInspected(spot); }
         note($"looked closely at {spot.id}");
     }
 

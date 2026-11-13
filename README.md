@@ -25,6 +25,9 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
   asks you instead of looping when a locked locker's key hasn't been seen, when the model proposes the step that just
   failed again, after 3 failed actions in a row (`STUCK_AFTER`), or after two unusable model replies. Your answer
   continues the same task.
+- **"Done" is checked:** before the robot may say it is finished, the bridge compares the task with the state lines
+  (is the named object where it was asked to go, is it the right object, is the cabinet closed again). A wrong
+  "done" is refused with the reason; after three the robot reports a failure instead of a success.
 - **No loops:** the bridge also refuses a question you have already answered and a `move_to`/`open`/`close` that
   just succeeded, and tells the model to move on.
 - **Model comparison:** `EVALUATION.md` compares Qwen3-VL 8B and Llama 3.2 Vision 11B on eight end-to-end tasks
