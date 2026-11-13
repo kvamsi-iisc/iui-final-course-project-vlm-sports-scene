@@ -1,0 +1,120 @@
+{
+  "_readme": [
+    "Sports room layout. Edit this file, then in Unity: Sports Robot > Scene Builder > Build scene.",
+    "Coordinates are metres on the floor as [x, z]: x grows to the east, z grows to the north.",
+    "rooms: rect = [x, z, width, depth]. Walls are built around every room; shared walls are merged.",
+    "  'floor': wood | tile | rubber gives the floor a texture (tinted with floor_color). 'wall_accent' (top level) colours the band on the walls.",
+    "zones: painted floor areas. 'style': basketball draws half-court lines ('hoop': the side the hoop is on); gym gives a rubber floor.",
+    "  'sign_at': [x, z] + 'sign_faces' hangs the zone's name on a wall. The robot reports which zone it and each object is in.",
+    "  'ceiling': true roofs a room (with a light), so the overhead camera can't see inside and the robot must go and look.",
+    "doors: 'at' must sit on a room edge. A closed door blocks walking until the robot opens it.",
+    "faces: north | east | south | west = the direction the object's front points (the robot stands on that side).",
+    "furniture kinds: rack, cabinet, locker, bench, table, mat, hoop, goal, ball_cart, treadmill, exercise_bike, rowing_machine, bench_press, squat_rack, hurdle, box",
+    "  rack / cabinet: 'levels' 1-4 creates shelf targets <id>_bottom, <id>_middle, <id>_top. A cabinet has a glass door.",
+    "    'label' puts a name plate on top of a rack or cabinet.",
+    "  locker: 'locked': true plus 'key': '<item id>' means the robot must bring that key. 'label' is the number on the door.",
+    "  'size': [width, height, depth] overrides the default size.",
+    "item kinds: ball, dumbbell, bottle, racket, bat, cone, trophy, medal, key",
+    "  place an item with 'on': '<furniture or shelf id>' (shelves, lockers, carts, benches...) or 'at': [x, z] on the floor.",
+    "  balls: 'size': [diameter] or [x, y, z]; 'style': basketball | soccer | tennis | panels (volleyball/handball) | rugby. 'color2' = seams / patches.",
+    "  others: 'scale' resizes. rackets 'style': tennis | badminton. bats 'style': cricket | baseball. 'color2' = grip / ribbon / key tag colour.",
+    "  'model': 'Assets/.../SomeModel.prefab' swaps in a downloaded 3D model; it is auto-scaled to real-life size.",
+    "ids are the names the robot's brain uses, so keep them descriptive and unique."
+  ],
+
+  "name": "Sports Complex",
+  "wall_height": 3.5,
+  "wall_color": "#E9E4DA",
+
+  "rooms": [
+    { "id": "main_hall",     "rect": [0, 0, 30, 20],  "floor_color": "#D9B27C", "floor": "wood" },
+    { "id": "locker_room_a", "rect": [30, 10, 8, 10], "floor_color": "#A9B7C6", "label": "LOCKER ROOM A", "floor": "tile", "ceiling": true },
+    { "id": "locker_room_b", "rect": [30, 0, 8, 10],  "floor_color": "#C6B1A9", "label": "LOCKER ROOM B", "floor": "tile", "ceiling": true }
+  ],
+
+  "zones": [
+    { "label": "BASKETBALL COURT", "rect": [1, 10.5, 13, 9],   "color": "#C47A35", "style": "basketball", "hoop": "north",
+      "sign_at": [3.3, 19.88], "sign_faces": "south" },
+    { "label": "GYM",              "rect": [16, 11, 13.5, 8.5], "color": "#3D4450", "style": "gym",
+      "sign_at": [22.5, 19.88], "sign_faces": "south" },
+    { "label": "EQUIPMENT STORAGE","rect": [1, 0.2, 18, 3.6],  "color": "#BFA27A" }
+  ],
+
+  "doors": [
+    { "id": "locker_room_a_door", "at": [30, 15], "width": 1.6, "sign": "LOCKER ROOM A", "color": "#3B6EA5" },
+    { "id": "locker_room_b_door", "at": [30, 5],  "width": 1.6, "sign": "LOCKER ROOM B", "color": "#A53B3B" }
+  ],
+
+  "furniture": [
+    { "id": "basketball_hoop", "kind": "hoop", "at": [7.5, 19.2], "faces": "south" },
+    { "id": "football_goal",   "kind": "goal", "at": [1.0, 5.0],  "faces": "east" },
+    { "id": "hurdle_1", "kind": "hurdle", "at": [8.5, 13.5],  "faces": "south" },
+    { "id": "hurdle_2", "kind": "hurdle", "at": [11.5, 11.5], "faces": "south" },
+    { "id": "hurdle_3", "kind": "hurdle", "at": [5.0, 15.0],  "faces": "east" },
+
+    { "id": "treadmill_1",    "kind": "treadmill",      "at": [17.5, 17.8], "faces": "south" },
+    { "id": "treadmill_2",    "kind": "treadmill",      "at": [19.2, 17.8], "faces": "south" },
+    { "id": "exercise_bike",  "kind": "exercise_bike",  "at": [21.2, 18.2], "faces": "south" },
+    { "id": "rowing_machine", "kind": "rowing_machine", "at": [23.2, 17.6], "faces": "south" },
+    { "id": "bench_press",    "kind": "bench_press",    "at": [26.0, 17.6], "faces": "south" },
+    { "id": "squat_rack",     "kind": "squat_rack",     "at": [28.4, 13.5], "faces": "west" },
+    { "id": "dumbbell_rack",  "kind": "rack", "levels": 2, "size": [1.6, 0.9, 0.5], "at": [24.0, 12.0], "faces": "south", "color": "#2C2C2C", "label": "DUMBBELLS" },
+    { "id": "blue_mat",  "kind": "mat", "at": [18.0, 12.8], "faces": "south", "color": "#2E86DE" },
+    { "id": "green_mat", "kind": "mat", "at": [18.0, 14.2], "faces": "south", "color": "#27AE60" },
+
+    { "id": "ball_rack",      "kind": "rack",    "levels": 3, "size": [3.0, 2.0, 0.6],  "at": [4.0, 0.45],  "faces": "north", "color": "#8A6F4E", "label": "BALLS" },
+    { "id": "bat_rack",       "kind": "rack",    "levels": 2, "size": [2.2, 1.4, 0.45], "at": [8.5, 0.38],  "faces": "north", "color": "#6E5A3E", "label": "RACQUETS & BATS" },
+    { "id": "trophy_shelf",   "kind": "rack",    "levels": 3, "size": [2.4, 2.0, 0.5],  "at": [13.0, 0.4],  "faces": "north", "color": "#4B3A2F", "label": "TROPHIES" },
+    { "id": "trophy_cabinet", "kind": "cabinet", "levels": 2, "size": [1.6, 1.9, 0.5],  "at": [17.0, 0.4],  "faces": "north", "color": "#5B4636", "label": "TROPHY CABINET" },
+    { "id": "ball_cart",      "kind": "ball_cart", "at": [6.0, 3.2], "faces": "north" },
+    { "id": "bench",          "kind": "bench",     "at": [14.0, 7.5], "faces": "north" },
+
+    { "id": "locker_1", "kind": "locker", "at": [37.6, 16.2], "faces": "west", "color": "#3B6EA5" },
+    { "id": "locker_2", "kind": "locker", "at": [37.6, 15.6], "faces": "west", "color": "#3B6EA5" },
+    { "id": "locker_3", "kind": "locker", "at": [37.6, 15.0], "faces": "west", "color": "#3B6EA5" },
+    { "id": "changing_bench_a", "kind": "bench", "at": [34.0, 19.3], "faces": "south" },
+
+    { "id": "locker_4", "kind": "locker", "at": [37.6, 5.6], "faces": "west", "color": "#A53B3B" },
+    { "id": "locker_5", "kind": "locker", "at": [37.6, 5.0], "faces": "west", "color": "#A53B3B", "locked": true, "key": "locker_key" },
+    { "id": "locker_6", "kind": "locker", "at": [37.6, 4.4], "faces": "west", "color": "#A53B3B" },
+    { "id": "changing_bench_b", "kind": "bench", "at": [34.0, 0.7], "faces": "north" }
+  ],
+
+  "items": [
+    { "id": "basketball",       "kind": "ball", "size": [0.24], "color": "#D9621C", "style": "basketball", "at": [7.5, 16.5] },
+    { "id": "spare_basketball", "kind": "ball", "size": [0.24], "color": "#D9621C", "style": "basketball", "on": "ball_rack_top" },
+    { "id": "volleyball",       "kind": "ball", "size": [0.21], "color": "#F2C32E", "style": "panels", "color2": "#1F5FBF", "on": "ball_rack_middle" },
+    { "id": "handball",         "kind": "ball", "size": [0.18], "color": "#2E86DE", "style": "panels", "color2": "#F1C40F", "on": "ball_rack_middle" },
+    { "id": "rugby_ball",       "kind": "ball", "size": [0.19, 0.19, 0.29], "color": "#8B4A2B", "style": "rugby", "on": "ball_rack_bottom" },
+    { "id": "soccer_ball",      "kind": "ball", "size": [0.22], "color": "#F7F7F7", "style": "soccer", "color2": "#111111", "at": [3.8, 5.0] },
+    { "id": "tennis_ball_1",    "kind": "ball", "size": [0.067], "color": "#C8E62E", "style": "tennis", "on": "ball_cart" },
+    { "id": "tennis_ball_2",    "kind": "ball", "size": [0.067], "color": "#C8E62E", "style": "tennis", "on": "ball_cart" },
+    { "id": "tennis_ball_3",    "kind": "ball", "size": [0.067], "color": "#C8E62E", "style": "tennis", "on": "ball_cart" },
+
+    { "id": "small_red_dumbbell", "kind": "dumbbell", "scale": 0.8,  "color": "#C0392B", "on": "dumbbell_rack_top" },
+    { "id": "large_red_dumbbell", "kind": "dumbbell", "scale": 1.35, "color": "#C0392B", "on": "dumbbell_rack_bottom" },
+    { "id": "blue_dumbbell",      "kind": "dumbbell", "scale": 1.0,  "color": "#2E5FAA", "on": "blue_mat" },
+
+    { "id": "blue_water_bottle",  "kind": "bottle", "color": "#2E86DE", "on": "bench" },
+    { "id": "red_water_bottle",   "kind": "bottle", "color": "#E74C3C", "on": "bench" },
+    { "id": "green_water_bottle", "kind": "bottle", "color": "#27AE60", "on": "locker_1" },
+
+    { "id": "tennis_racket",    "kind": "racket", "color": "#1F3A93", "on": "bat_rack_top" },
+    { "id": "badminton_racket", "kind": "racket", "style": "badminton", "color": "#8E44AD", "on": "bat_rack_top" },
+    { "id": "cricket_bat",      "kind": "bat", "style": "cricket",  "color": "#E8D3A2", "on": "bat_rack_bottom" },
+    { "id": "baseball_bat",     "kind": "bat", "style": "baseball", "color": "#A0522D", "on": "bat_rack_bottom" },
+
+    { "id": "orange_cone_1", "kind": "cone", "at": [10.0, 16.5] },
+    { "id": "orange_cone_2", "kind": "cone", "at": [11.5, 16.5] },
+    { "id": "orange_cone_3", "kind": "cone", "at": [13.0, 16.5] },
+
+    { "id": "gold_trophy",   "kind": "trophy", "color": "#D4AF37", "on": "trophy_shelf_top" },
+    { "id": "silver_trophy", "kind": "trophy", "color": "#C0C0C0", "on": "trophy_shelf_middle" },
+    { "id": "bronze_trophy", "kind": "trophy", "color": "#CD7F32", "on": "trophy_shelf_bottom" },
+    { "id": "gold_medal",    "kind": "medal",  "color": "#D4AF37", "color2": "#C0392B", "on": "locker_5" },
+
+    { "id": "locker_key", "kind": "key", "scale": 1.5, "color": "#B8B8B8", "on": "locker_2" }
+  ],
+
+  "robot": { "at": [15.0, 9.5], "faces": "north" }
+}

@@ -1,0 +1,6 @@
+# API keys stay on this machine: never commit or hand in this folder.
+creds/
+.env
+__pycache__/
+.local/
+.venv/
