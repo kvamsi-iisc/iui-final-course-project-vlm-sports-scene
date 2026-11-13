@@ -35,7 +35,7 @@ public class Perception : MonoBehaviour
     }
 
     // The floor plan is always known: rooms and the doors between them.
-    static bool OnMap(Interactable i) => i.kind == "room" || i.kind == "door";
+    static bool OnMap(Interactable i) => i.kind == "room" || i.kind == "door" || i.kind == "area";
 
     public bool Knows(Interactable i) => i && (OnMap(i) || seen.Contains(i) || (i.partOf && seen.Contains(i.partOf)));
     public IEnumerable<Interactable> Known => Interactable.All.Where(Knows);
@@ -49,7 +49,7 @@ public class Perception : MonoBehaviour
     // Known places that might hold things the robot hasn't spotted yet.
     public IEnumerable<Interactable> Unchecked => Known.Where(i => !i.partOf && IsHolder(i) && !inspected.Contains(i));
 
-    public static bool IsHolder(Interactable i) => i.kind != "room" && i.kind != "door" && (i.canHold || i.levels.Count > 0);
+    public static bool IsHolder(Interactable i) => !OnMap(i) && (i.canHold || i.levels.Count > 0);
 
     public List<string> TakeNewlySeen()
     {
@@ -81,9 +81,16 @@ public class Perception : MonoBehaviour
 
     // The robot has just stood in front of this place and looked into it: count it as checked even when its
     // middle is outside the picture because the eye is tilted down at the floor of a locker.
+    // Looking into a place up close shows everything that is on or in it, shelf by shelf, including things a
+    // single glance misses because a shelf board or the thing in front is in the way.
     public void MarkInspected(Interactable i)
     {
-        if (i && CanCheckInside(i)) inspected.Add(i.partOf ? i.partOf : i);
+        if (!i || !CanCheckInside(i)) return;
+        var holder = i.partOf ? i.partOf : i;
+        inspected.Add(holder);
+        foreach (var place in holder.levels.Append(holder))
+            foreach (var thing in place.contents)
+                if (thing && seen.Add(thing)) { fresh.Add(thing); Seen?.Invoke(thing); }
     }
 
     static bool CanCheckInside(Interactable i) => !i.openable || i.IsOpen || i.seeThrough;

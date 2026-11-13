@@ -141,6 +141,15 @@ public class RobotAgent : MonoBehaviour
         void Fail(string e) { failed = true; fail(e); }
 
         var targetRoom = target && target.kind == "room" ? target.GetComponent<RoomArea>() : null;
+        var targetZone = target && target.kind == "area" ? target.GetComponent<FloorZone>() : null;
+        if (targetZone)
+        {
+            // A floor area: look closely at the nearest piece of furniture in it that hasn't been checked yet.
+            var inZone = Nearest(perception.Unchecked.Where(i => Searchable(i) && FloorZone.At(i.transform.position) == targetZone));
+            if (!inZone) { Fail($"nothing left to explore in {target.id}"); yield break; }
+            yield return Inspect(inZone, Fail, note);
+            yield break;
+        }
         if (target && !targetRoom)
         {
             if (!Perception.IsHolder(target)) { Fail($"{target.id} has nothing to look inside; explore a room or a shelf, locker or cart"); yield break; }
@@ -186,15 +195,26 @@ public class RobotAgent : MonoBehaviour
             if (!failed)
             {
                 note($"opened {spot.id} to look inside");
+                foreach (var level in spot.levels)
+                {
+                    AimEye(level.placePoint ? level.placePoint.position : Middle(level));
+                    yield return new WaitForSeconds(0.3f);
+                    if (perception) perception.Scan();
+                }
                 if (perception) { perception.Scan(); perception.MarkInspected(spot); }
             }
             yield break;
         }
         yield return EnsureInFront(spot, e => { failed = true; fail(e); });
         if (failed) yield break;
-        AimEye(spot.placePoint ? spot.placePoint.position : Middle(spot));
-        yield return new WaitForSeconds(0.3f);
-        if (perception) { perception.Scan(); perception.MarkInspected(spot); }
+        // A rack is looked at shelf by shelf, so that nothing on a low or high shelf is missed.
+        foreach (var level in spot.levels.Count > 0 ? spot.levels : new List<Interactable> { spot })
+        {
+            AimEye(level.placePoint ? level.placePoint.position : Middle(level));
+            yield return new WaitForSeconds(0.3f);
+            if (perception) perception.Scan();
+        }
+        if (perception) perception.MarkInspected(spot);
         note($"looked closely at {spot.id}");
     }
 
@@ -276,7 +296,7 @@ public class RobotAgent : MonoBehaviour
             if (timer > moveTimeout) { nav.isStopped = true; fail($"couldn't reach {t.id}"); yield break; }
             yield return null;
         }
-        if (t.kind != "room") yield return Face(t.transform.position);
+        if (t.kind != "room" && t.kind != "area") yield return Face(t.transform.position);
     }
 
     // Small robustness win: if the VLM forgot a move_to, walk there anyway.

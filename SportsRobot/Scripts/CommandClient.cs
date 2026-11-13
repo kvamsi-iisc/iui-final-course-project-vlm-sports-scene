@@ -27,6 +27,21 @@ using UnityEngine.UI;
     public int step, maxSteps, failures, maxFailures;
 }
 
+// One known object as plain data, so the bridge can check a goal against the world without parsing sentences.
+[Serializable] class Fact
+{
+    public string id, kind;
+    public string inside;               // the shelf, locker or surface it is on or in ("" = free-standing or held)
+    public string part_of;              // the rack or cabinet a shelf belongs to
+    public string room;                 // the room it is in
+    public string area;                 // the named floor area it is in, if any (gym, basketball_court)
+    public string key;                  // what a locked thing needs
+    public bool pickable, holder, openable, open, locked;
+    public bool see_through;            // glass door: the contents show while it is closed
+    public bool inspected;              // holders: contents checked up close; rooms: visited
+    public float distance;              // metres from the robot (rooms: 0 while the robot is inside)
+}
+
 [Serializable] class Observation
 {
     public string type;                 // command | answer | result | cancel
@@ -35,6 +50,7 @@ using UnityEngine.UI;
     public string error, note;
     public string image_b64, overhead_b64;
     public string[] known, states, newly_seen, unexplored;
+    public Fact[] facts;                // the same known objects as "states", as data
     public string holding, location;
 }
 
@@ -249,7 +265,7 @@ public class CommandClient : MonoBehaviour
         var pos = robot.transform.position;
         var room = RoomArea.At(pos);
         string zone = FloorZone.Name(pos);
-        var nearest = known.Where(i => i.kind != "room" && i != robot.Held)
+        var nearest = known.Where(i => i.kind != "room" && i.kind != "area" && i != robot.Held)
                            .OrderBy(i => Flat(i.transform.position - pos)).FirstOrDefault();
 
         return new Observation
@@ -263,6 +279,7 @@ public class CommandClient : MonoBehaviour
             overhead_b64 = Capture(topRT),
             known = known.Select(i => i.id).ToArray(),
             states = known.Select(i => StateLine(i, knows, checkedClose, room)).ToArray(),
+            facts = known.Select(FactOf).ToArray(),
             newly_seen = perception ? perception.TakeNewlySeen().ToArray() : new string[0],
             unexplored = Unexplored().ToArray(),
             holding = robot.HeldName,
@@ -279,7 +296,32 @@ public class CommandClient : MonoBehaviour
             return $"{i.id} (room{(r.roofed ? ", roofed, can't be seen from above" : "")}; {seen}" +
                    $"{(r == here ? "; robot is here" : "")}; doors: {string.Join(", ", r.doors.Select(d => d.id))})";
         }
+        if (i.kind == "area")
+        {
+            var inRoom = RoomArea.At(i.transform.position);
+            return $"{i.id} (floor area{(inRoom ? " of " + inRoom.Id : "")}{(FloorZone.At(robot.transform.position) == i.GetComponent<FloorZone>() ? "; robot is here" : "")})";
+        }
         return i.Describe(knows, checkedClose, Where(i));
+    }
+
+    Fact FactOf(Interactable i)
+    {
+        var r = i.kind == "room" ? i.GetComponent<RoomArea>() : RoomArea.At(i.transform.position);
+        return new Fact
+        {
+            id = i.id, kind = i.kind,
+            inside = i.ContainedIn ? i.ContainedIn.id : "",
+            part_of = i.partOf ? i.partOf.id : "",
+            room = i == robot.Held || !r ? "" : r.Id,
+            area = i == robot.Held || i.kind == "room" || i.kind == "area" ? "" : FloorZone.Name(i.transform.position),
+            see_through = i.seeThrough,
+            key = i.locked ? i.keyId : "",
+            pickable = i.pickable, holder = Perception.IsHolder(i), openable = i.openable, open = i.IsOpen, locked = i.locked,
+            inspected = i.kind == "room" ? (perception && r && perception.Visited(r)) : (!perception || perception.Inspected(i)),
+            distance = (i.kind == "room" && r && r.Contains(robot.transform.position)) ||
+                       (i.kind == "area" && FloorZone.At(robot.transform.position) == i.GetComponent<FloorZone>())
+                       ? 0f : Flat(i.transform.position - robot.transform.position),
+        };
     }
 
     // Which part of the building a free-standing thing is in. Things on shelves or in lockers already say so.
