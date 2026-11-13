@@ -54,6 +54,10 @@ ACTIONS = {
     "explore": None,
 }
 
+# Other names models give these actions (a goal form or an everyday word used as an action name)
+ALIASES = {"robot_at": "move_to", "go_to": "move_to", "goto": "move_to", "walk_to": "move_to",
+           "pick_up": "pick", "put": "place", "put_down": "place", "turn": "rotate"}
+
 SYSTEM_PROMPT = """You are the brain of a mobile robot working inside a building. The user gives a task in everyday
 language. You decide what the robot does. The robot has an eye camera and ONE hand: it carries one thing at a time.
 
@@ -101,11 +105,16 @@ GOAL: one entry for each thing the task is about, in one of these forms:
   {"object": "<id>", "in": "<id>"}    the object ends up on or in that place (a shelf, rack, locker, cabinet, mat, room ...)
   {"open": "<id>"}  or  {"closed": "<id>"}
   {"robot_at": "<id>"}                the robot itself ends up next to that thing or inside that room or area
-Say only how things must be at the END. "get X and put it in Y", "take X to Y", "move X onto Y" are all just
+  {"did": "<action>", "target": "<id>"}   the robot has carried out that action during this task (no target for
+                                      rotate, wait and look_around)
+Say how things must be at the END. "get X and put it in Y", "take X to Y", "move X onto Y" are all just
 {"object": X, "in": Y}: the robot does not hold X at the end. Use "holding" only when the user wants X handed over.
+Use "did" only for what must HAPPEN and can't be seen in the end state: turning, waiting, looking around, and the
+earlier steps of a task the user gave as a sequence. "did" entries count in the order you list them: "open X, then
+close it" is [{"did": "open", "target": X}, {"closed": X}]. Never list both open and closed for one thing.
 State the same goal every turn until it is reached. For a thing that is in KNOWN OBJECTS use its exact id. For a
 thing that has not been seen yet, write the id you expect it to have, in the same style (gold_medal, locker_5).
-Use [] only when none of the forms fits the task (for example "turn around").
+Use [] only while you have to ask the user before the goal is clear.
 
 HOW TO DECIDE
 1. Understand the task. Match the user's words to KNOWN OBJECTS by MEANING, not by spelling: another word for the
@@ -127,15 +136,18 @@ HOW TO DECIDE
    Never ask the user for permission to look or explore.
 4. Plan the shortest way to the goal that respects the world:
    - one thing in the hand; to take a second thing, put the first down on a surface nearby and fetch it again later;
+   - pick, place, open, close and explore walk to their target by themselves: no move_to before them;
    - a closed locker or cabinet must be opened before taking things out or putting things in; close a cabinet again
-     when you have finished with it;
+     when you have finished with it, unless the user asked you to open it or to leave it open;
    - a locked thing ("locked, needs X") opens only while the robot HOLDS X. The key stays in the lock, so the hand
      is free afterwards. If X is in KNOWN OBJECTS, fetch it. If X has not been seen, return status "ask": say what
      is locked and which key is missing, and ask whether the user knows where it is or wants you to search;
    - a closed door blocks the way into its room: open it first (explore does this itself).
-5. When a step failed, read the error and fix its cause with a different step. Never repeat a failed step unchanged
-   and never repeat a step that has already succeeded. If nothing fixes it, return status "ask".
-6. Return status "done" with an empty plan only when GOAL CHECK shows every part of the goal as REACHED.
+5. When a step failed, read the error and fix its cause with a different step. Never repeat a failed step
+   unchanged. Don't repeat a step that has already succeeded, unless the task itself asks for it again (open, close,
+   then open again; one trip for each of several objects). If nothing fixes it, return status "ask".
+6. Return status "done" with an empty plan only when GOAL CHECK shows every part of the goal as REACHED. On the
+   first turn that is only possible when things already are as the user wants and the goal has no "did" entry.
 7. Return status "impossible" with an empty plan, and say why, when the task makes no sense or can't be done, or
    when the thing is still unknown after every sensible place has been explored. Don't give up while a sensible
    place is still listed under NOT EXPLORED YET, and never report success for something that was not done.
@@ -147,6 +159,20 @@ TASK: put the stapler in the top drawer. KNOWN OBJECTS include stapler and desk_
  "reply": "Putting the stapler in the top drawer.", "plan": [{"action": "pick", "target": "stapler"},
  {"action": "open", "target": "desk_drawer_top"}, {"action": "place", "target": "desk_drawer_top"},
  {"action": "close", "target": "desk_drawer_top"}]}
+
+TASK: open the top drawer, then close it. KNOWN OBJECTS include desk_drawer_top (closed).
+{"things": [{"words": "the top drawer", "ids": ["desk_drawer_top"]}],
+ "goal": [{"did": "open", "target": "desk_drawer_top"}, {"closed": "desk_drawer_top"}], "status": "working",
+ "reply": "Opening the top drawer, then closing it again.", "plan": [{"action": "open", "target": "desk_drawer_top"},
+ {"action": "close", "target": "desk_drawer_top"}]}
+
+TASK: open the top drawer. (The user wants it open: it stays open.)
+{"things": [{"words": "the top drawer", "ids": ["desk_drawer_top"]}], "goal": [{"open": "desk_drawer_top"}],
+ "status": "working", "reply": "Opening the top drawer.", "plan": [{"action": "open", "target": "desk_drawer_top"}]}
+
+TASK: turn around.
+{"things": [], "goal": [{"did": "rotate"}], "status": "working", "reply": "Turning around.",
+ "plan": [{"action": "rotate", "degrees": 180}]}
 
 TASK: bring me my passport. No passport is known; papers like that are kept in the office or the bedroom safe.
 {"things": [{"words": "my passport", "ids": []}],
@@ -242,7 +268,19 @@ class OllamaBackend:
         self.timeout, self.num_ctx, self.keep_alive = timeout, num_ctx, keep_alive
         self.num_batch = num_batch
 
+    def warm_up(self):
+        """Loads the model into memory before the first command, so that command doesn't pay for it.
+        Returns the seconds it took."""
+        began = time.monotonic()
+        body = {"model": self.model, "messages": [], "stream": False, "keep_alive": self.keep_alive,
+                "options": {"num_ctx": self.num_ctx, "num_batch": self.num_batch}}
+        req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            json.load(resp)
+        return time.monotonic() - began
+
     def __call__(self, system, user_text, images):
+        self.last_stats = {}
         if self.combine and len(images) > 1:
             images = [combine_camera_images(images)]
             system += ("\nThe two camera views are combined into ONE image: the LEFT panel is Image 1 "
@@ -438,6 +476,7 @@ def clean_step(step, known, waiting=False):
     if not isinstance(step, dict):
         return None, f"malformed step {step!r}"
     name = norm(step.get("action", ""))
+    name = ALIASES.get(name, name)
     if name not in ACTIONS:
         return None, f"unknown action '{name}'; allowed: {', '.join(ACTIONS)}"
     clean = {"action": name, "target": "", "degrees": 0.0, "seconds": 0.0}
@@ -461,14 +500,20 @@ def clean_step(step, known, waiting=False):
 
 
 def clean_goal(raw, known):
-    """The model's goal -> a list of conditions the bridge can check: {"kind": holding|in|open|closed, "object", "place"}.
+    """The model's goal -> a list of conditions the bridge can check: {"kind": holding|in|open|closed|robot_at|did,
+    "object", "place"} ("did" also has "action": something the robot must have done, see check_goal).
     Ids of things not seen yet are kept as written; such a condition counts as "not found yet"."""
     goal = []
     for c in raw if isinstance(raw, list) else []:
         if not isinstance(c, dict):
             continue
         place = next((c[k] for k in ("in", "on", "at", "inside", "place") if isinstance(c.get(k), str) and c[k].strip()), None)
-        if isinstance(c.get("holding"), str):
+        if isinstance(c.get("did"), str):
+            if norm(c["did"]) not in ACTIONS:
+                continue
+            cond = {"kind": "did", "object": c["target"] if isinstance(c.get("target"), str) else "", "place": "",
+                    "action": norm(c["did"])}
+        elif isinstance(c.get("holding"), str):
             cond = {"kind": "holding", "object": c["holding"], "place": ""}
         elif isinstance(c.get("object"), str) and place:
             cond = {"kind": "in", "object": c["object"], "place": place}
@@ -482,8 +527,19 @@ def clean_goal(raw, known):
             continue
         for k in ("object", "place"):
             cond[k] = known.get(norm(cond[k]), norm(cond[k])) if cond[k] else ""
-        if cond["object"] and cond not in goal:
-            goal.append(cond)
+        if cond["kind"] == "did" or (cond["object"] and cond not in goal[-1:]):
+            goal.append(cond)             # (a "did" may be wanted twice; anything else said twice in a row is once)
+    # One thing can't be open AND closed at the end. When a later entry undoes an "open" or "closed" (the opposite
+    # state, or a "did" of the opposite action), the list is a sequence: that entry is a step that must have
+    # happened, and only the last one is the end state.
+    for i, c in enumerate(goal):
+        if c["kind"] not in ("open", "closed"):
+            continue
+        undone = lambda d: d["object"] == c["object"] and (
+            (d["kind"] in ("open", "closed") and d["kind"] != c["kind"])
+            or (d["kind"] == "did" and d["action"] == ("close" if c["kind"] == "open" else "open")))
+        if any(undone(d) for d in goal[i + 1:]):
+            goal[i] = {"kind": "did", "object": c["object"], "place": "", "action": "open" if c["kind"] == "open" else "close"}
     return goal
 
 
@@ -544,6 +600,13 @@ def parse_reply(raw, known_ids):
                 out["error"] = err
             break
         out["plan"].append(clean)
+    # "move_to X" straight before an action on X that walks there anyway only costs time. (Kept when the goal
+    # asks for that very walk.)
+    asked = {c["object"] for c in out["goal"] if c["kind"] == "did" and c["action"] == "move_to"}
+    plan = out["plan"]
+    out["plan"] = [s for i, s in enumerate(plan) if not (
+        s["action"] == "move_to" and s["target"] not in asked and i + 1 < len(plan)
+        and plan[i + 1]["action"] in WALKS_THERE and plan[i + 1]["target"] == s["target"])]
     if not out["plan"] and not out["error"]:
         out["status"] = "done"
     return out
@@ -552,6 +615,7 @@ def parse_reply(raw, known_ids):
 # ---------------------------------------------------------------- the world as data
 
 SEARCH = ("explore", "look_around")
+WALKS_THERE = ("pick", "place", "open", "close", "explore")   # actions that walk to their target by themselves
 NEAR = 2.5     # metres: "the robot is at X"
 
 
@@ -723,7 +787,55 @@ def show(action):
 def show_goal(cond):
     if cond["kind"] == "in":
         return f"{cond['object']} in/on {cond['place']}"
+    if cond["kind"] == "did":
+        return f"did {cond['action']} {cond['object']}".strip()
     return f"{cond['kind'].replace('_', ' ')} {cond['object']}"
+
+
+def check_goal(goal, world, done=()):
+    """[(True | False | None, sentence)] for every condition of a goal. States are read from the world. A "did"
+    condition is read from `done`, the actions that have succeeded in this task as (action, target): the "did"
+    entries must have happened in the order the goal lists them."""
+    out, pos = [], 0
+    for c in goal:
+        thing = norm(c["object"])
+        if c["kind"] != "did":
+            ok, text = world.check(c)
+            if c["kind"] == "robot_at" and ok is False and done and tuple(done[-1]) == ("move_to", thing):
+                ok, text = True, f"the robot is at {c['object']}"     # it has just walked there
+            out.append((ok, text))
+            continue
+        label = show_goal(c)[4:]
+        if thing and thing not in world.known:
+            out.append((None, f"{c['object']} has not been seen yet"))
+            continue
+        hit = next((i for i in range(pos, len(done)) if done[i][0] == c["action"] and thing in ("", done[i][1])), None)
+        if hit is None:
+            out.append((False, f"'{label}' has not been carried out yet"))
+        else:
+            pos = hit + 1
+            out.append((True, f"'{label}' was carried out"))
+    return out
+
+
+def timing(t):
+    """Where the time of a task went, as (one line for people, the same as data)."""
+    add = lambda key: round(sum(c.get(key) or 0 for c in t.calls), 2)
+    total, model = time.monotonic() - t.started, add("s")
+    s = {"command": t.command, "total_s": round(total, 2), "model_calls": len(t.calls), "model_s": model,
+         "load_s": add("load_s"), "prompt_s": add("prompt_s"), "output_s": add("output_s"),
+         "prompt_tokens": add("prompt_tokens"), "output_tokens": add("output_tokens"),
+         "robot_s": round(t.robot_s, 2), "user_s": round(t.user_s, 2),
+         "other_s": round(max(0.0, total - model - t.robot_s - t.user_s), 2),
+         "actions": t.steps, "failed_actions": t.failed_actions, "rejected_replies": t.rejected,
+         "plan_stops": t.plan_stops, "calls": t.calls}
+    detail = (f" (loading weights {s['load_s']:g}, reading the prompt {s['prompt_s']:g}, writing the reply {s['output_s']:g})"
+              if s["load_s"] or s["prompt_s"] or s["output_s"] else "")
+    line = (f"{s['total_s']:.1f} s in total: model {model:.1f} s in {len(t.calls)} call(s){detail}, "
+            f"robot {s['robot_s']:.1f} s for {t.steps} action(s), waiting for the user {s['user_s']:.1f} s, "
+            f"other {s['other_s']:.1f} s; {t.rejected} model reply(ies) sent back, {t.plan_stops} plan(s) stopped early, "
+            f"{t.failed_actions} failed action(s)")
+    return line, s
 
 
 # ---------------------------------------------------------------- the loop
@@ -748,6 +860,18 @@ class Task:
         self.chosen = False      # the model has been asked once whether it chose between look-alikes by itself
         self.unconfirmed = 0     # times the model said "done" while the world said otherwise
         self.current = None      # the action Unity is running
+        self.done = []           # (action, target) of every action that succeeded, in order: what "did" goals are checked against
+        self.revisable = False   # the user has just answered: the next reply may state a different goal
+        self.nudged = False      # the model has been asked once about a "done" with no goal and nothing done
+        # where the time goes (see timing)
+        self.started = time.monotonic()
+        self.sent = self.started # when the last action or question went to Unity
+        self.calls = []          # one record per model call: seconds, and load / prompt / output details if the backend has them
+        self.robot_s = 0.0       # Unity carrying out actions
+        self.user_s = 0.0        # waiting for the user's answers
+        self.rejected = 0        # model replies the bridge sent back instead of acting on them
+        self.plan_stops = 0      # plans the bridge stopped before the end (the model had to plan again)
+        self.failed_actions = 0
 
 
 class Brain:
@@ -760,13 +884,14 @@ class Brain:
     def handle(self, obs):
         kind = obs.get("type", "command")
         if kind == "cancel":
-            self.task = None
-            return self.msg("done", reply="Stopped.")
+            return self.finish("done", "Stopped.")
         if kind in ("command", "answer"):
             text = str(obs.get("text", "")).strip()
             if kind == "answer" and self.task and self.task.question:
                 self.task.answers.append((self.task.question, text))
                 self.task.question = None
+                self.task.user_s += time.monotonic() - self.task.sent
+                self.task.revisable = True    # ... and it may change what the user wants
                 self.task.streak = 0          # the user's answer is new information: earlier dead ends may work now
                 self.task.blocked.clear()
             else:
@@ -777,6 +902,7 @@ class Brain:
             if not t or not t.current:
                 return self.msg("done", error="got a result but no task is running")
             t.steps += 1
+            t.robot_s += time.monotonic() - t.sent
             line = show(t.current)
             error = ""
             if obs.get("ok", True):
@@ -786,11 +912,13 @@ class Brain:
                 t.streak = 0
                 t.blocked.clear()
                 t.just_done = show(t.current)
+                t.done.append((t.current["action"], norm(t.current["target"])))
             else:
                 t.just_done = None
                 error = str(obs.get("error") or "unknown error")
                 line += f" -> FAILED: {error}"
                 t.failures += 1
+                t.failed_actions += 1
                 t.streak += 1
                 t.blocked[show(t.current)] = error
                 t.plan = []
@@ -817,6 +945,7 @@ class Brain:
 
     def ask(self, question, raw=""):
         self.task.question = question
+        self.task.sent = time.monotonic()
         return self.msg("ask", reply=question, raw=raw)
 
     def planned(self, t, world, obs):
@@ -831,6 +960,7 @@ class Brain:
                              f"If an object in KNOWN OBJECTS is what the user means, use its exact id (and ask if more "
                              f"than one fits). Otherwise keep searching. {world.search_status()}")
                 t.plan = []
+                t.plan_stops += 1
                 return None
             if step["action"] in SEARCH:
                 if t.searching and not waiting:
@@ -850,15 +980,36 @@ class Brain:
             if problem:
                 self.note(t, f"the plan was stopped before it failed: {problem}. Give a new plan that fixes this")
                 t.plan = []
+                t.plan_stops += 1
                 return None
             return clean_step(t.plan.pop(0), world.known)[0]
-        if t.goal and world.facts and all(world.check(c)[0] for c in t.goal):
+        if t.goal and world.facts and all(ok for ok, _ in check_goal(t.goal, world, t.done)):
             return "done"
         return None
 
     def note(self, t, text):
         t.history.append(f"({text})")
         self.log(text)
+
+    def bounce(self, t, text):
+        """Sends the model's reply back to it with the reason, instead of acting on it."""
+        t.rejected += 1
+        self.note(t, text)
+
+    def call_model(self, t, prompt, images):
+        began = time.monotonic()
+        try:
+            return self.vlm(SYSTEM_PROMPT, prompt, images)
+        finally:
+            ns = lambda v: round(v / 1e9, 2) if isinstance(v, (int, float)) else None
+            st = getattr(self.vlm, "last_stats", None) or {}
+            call = {"s": round(time.monotonic() - began, 2), "load_s": ns(st.get("load_duration")),
+                    "prompt_tokens": st.get("prompt_eval_count"), "prompt_s": ns(st.get("prompt_eval_duration")),
+                    "output_tokens": st.get("eval_count"), "output_s": ns(st.get("eval_duration"))}
+            t.calls.append(call)
+            extra = (f" (loading weights {call['load_s']} s, reading {call['prompt_tokens']} prompt tokens {call['prompt_s']} s, "
+                     f"writing {call['output_tokens']} tokens {call['output_s']} s)" if st else "")
+            self.log(f"  model call {len(t.calls)}: {call['s']:.1f} s{extra}")
 
     def decide(self, obs, last_ok=False, last_error="", failed=None):
         t = self.task
@@ -881,7 +1032,7 @@ class Brain:
             if self.feedback == "after_plan" and last_ok:
                 step = self.planned(t, world, obs)
                 if step == "done":            # the state of the world proves it; no need to ask the model
-                    return self.finish("done", "Done: " + "; ".join(world.check(c)[1] for c in t.goal) + ".")
+                    return self.finish("done", "Done: " + "; ".join(text for _, text in check_goal(t.goal, world, t.done)) + ".")
                 if step:
                     return self.act(step, reply="", raw="")
             last_ok = False
@@ -889,28 +1040,33 @@ class Brain:
             prompt = build_prompt(t, obs, world)
             images = [b for b in (obs.get("image_b64"), obs.get("overhead_b64")) if b]
             try:
-                raw = self.vlm(SYSTEM_PROMPT, prompt, images)
+                raw = self.call_model(t, prompt, images)
             except Exception as e:  # model server down, out of free requests, timeout...
                 return self.finish("fail", "The vision model is unavailable right now.", error=str(e))
 
             r = parse_reply(raw, known)
             if r["error"]:
                 t.failures += 1
-                self.note(t, f"your last reply was rejected: {r['error']}")
+                self.bounce(t, f"your last reply was rejected: {r['error']}")
                 self.log(f"  raw: {raw}")
                 rejected += 1
                 if rejected >= 2:   # don't keep the user waiting while the model flounders
                     return self.ask(unsure, raw=raw)
                 continue
-            if r["goal"] or not t.goal:
+            # The goal is restated every turn and may be corrected while working. But a reply that says "done"
+            # can't swap in another goal at that moment: it is held to the goal it has been working towards
+            # (unless the user has just said something new, or that goal named things that were never found).
+            held_to = r["status"] == "done" and t.goal and not t.revisable and not world.unseen(t.goal)
+            if (r["goal"] or not t.goal) and not held_to:
                 t.goal = r["goal"]
+            t.revisable = False
             t.fresh = []
 
             if r["status"] == "ask":
                 question = r["question"] or r["reply"]
                 answered = next((ans for q, ans in t.answers if norm(q) == norm(question)), None)
                 if answered is not None:   # asking again what the user already answered would loop forever
-                    self.note(t, f'you already asked "{question}" and the user answered "{answered}". '
+                    self.bounce(t, f'you already asked "{question}" and the user answered "{answered}". '
                                  f"Don't ask it again: act on that answer now")
                     rejected += 1
                     if rejected >= 2:
@@ -919,18 +1075,25 @@ class Brain:
                 return self.ask(question, raw=raw)
             if r["status"] == "done":
                 # The model says done; the world has the last word. Never report a success that isn't one.
-                wrong = [text for ok, text in map(world.check, t.goal) if not ok] if world.facts else []
+                wrong = [text for ok, text in check_goal(t.goal, world, t.done) if not ok] if world.facts else []
                 if wrong:
                     t.unconfirmed += 1
                     if t.unconfirmed > 2:
                         return self.finish("fail", f"I couldn't finish this: {'; '.join(wrong)}.", raw=raw)
-                    self.note(t, f"you said done, but your own goal is NOT reached: {'; '.join(wrong)}. Continue with the "
-                                 f"steps that fix this, or return status impossible if it can't be done")
+                    self.bounce(t, f"you said done, but your own goal is NOT reached: {'; '.join(wrong)}. Continue with the "
+                                   f"steps that fix this, or return status impossible if it can't be done")
+                    continue
+                if not t.goal and not t.done and not t.nudged:
+                    # "Done" with no goal and nothing done can't be checked at all: make sure it is meant.
+                    t.nudged = True
+                    self.bounce(t, 'you said done, but the robot has not done anything and you gave no goal. If the task '
+                                   'asks the robot to do something, give the goal (use "did" for an action such as turning '
+                                   'or waiting) and the plan. If there really is nothing to do, say done again')
                     continue
             if r["status"] == "impossible" and world.unseen(t.goal) and world.hidden() and t.unconfirmed < 2:
                 # Giving up on a thing that hasn't been found, while rooms or lockers have never been looked into.
                 t.unconfirmed += 1
-                self.note(t, f"you can't call this impossible yet: {', '.join(world.unseen(t.goal))} has not been found. "
+                self.bounce(t, f"you can't call this impossible yet: {', '.join(world.unseen(t.goal))} has not been found. "
                              f"{world.search_status()}. Look there before giving up")
                 continue
             if r["status"] in ("done", "impossible"):
@@ -941,21 +1104,27 @@ class Brain:
             used = {norm(c["object"]) for c in r["goal"]} | {norm(x["target"]) for x in r["plan"]}
             choice = next((ids for ids in r["things"] if len(ids) > 1 and len(used & set(map(norm, ids))) == 1), None)
             held = {c["object"] for c in r["goal"] if c["kind"] == "holding"} & {c["object"] for c in r["goal"] if c["kind"] == "in"}
+            both = next((ids for ids in r["things"] for kind in ("robot_at", "holding")
+                         if len({norm(c["object"]) for c in r["goal"] if c["kind"] == kind} & set(map(norm, ids))) > 1), None)
+            if both and not t.answers:
+                # Its goal has the robot at, or its one hand holding, several things that fit the same words at
+                # once. That can't be: the words don't single one out, so the user chooses (no second model call).
+                return self.ask(f"Which one do you mean: {' or '.join(both)}?", raw=raw)
             if choice and not t.answers and not t.chosen:
                 # By its own list several known objects fit the user's words, and it went ahead with one of them.
                 t.chosen = True
-                self.note(t, f"you listed {', '.join(choice)} as fitting the same words of the user, and then chose one. If "
+                self.bounce(t, f"you listed {', '.join(choice)} as fitting the same words of the user, and then chose one. If "
                              f"the user's words really single out one of them, list only that id under things. If they fit "
                              f"equally well, return status ask and let the user choose")
                 continue
             if held and rejected == 0:
-                self.note(t, f"your goal contradicts itself: {', '.join(held)} can't be in the robot's hand AND put down "
+                self.bounce(t, f"your goal contradicts itself: {', '.join(held)} can't be in the robot's hand AND put down "
                              f"somewhere at the end. Keep only the entry that says where it must END UP")
                 rejected += 1
                 continue
             if first["action"] in ("move_to", "open", "close") and show(first) == t.just_done:
                 # The step just succeeded and doing it again changes nothing: a model stuck on a no-op.
-                self.note(t, f"you proposed '{show(first)}' again, but it already succeeded and repeating it "
+                self.bounce(t, f"you proposed '{show(first)}' again, but it already succeeded and repeating it "
                              f"changes nothing. Give the NEXT step of the task, or status done if it is finished")
                 rejected += 1
                 if rejected >= 2:
@@ -979,7 +1148,7 @@ class Brain:
             if problem and (problem != told or searched):
                 # A step that is certain to fail (hand full, locker locked...): let the model fix the plan now,
                 # while nothing has moved, instead of walking into the failure.
-                self.note(t, f"your plan was not started: {problem}. Give a plan that fixes this")
+                self.bounce(t, f"your plan was not started: {problem}. Give a plan that fixes this")
                 told = problem
                 rejected += 1
                 if rejected > 2:
@@ -995,6 +1164,7 @@ class Brain:
 
     def act(self, step, reply, raw):
         self.task.current = step
+        self.task.sent = time.monotonic()
         return self.msg("act", reply=reply, raw=raw, next=step)
 
     def finish(self, kind, reply, raw="", error=""):
@@ -1009,6 +1179,8 @@ class Brain:
              "failures": t.failures if t else 0, "maxFailures": MAX_FAILURES}
         if next:
             m["next"] = next
+        if t and kind in ("done", "fail"):
+            m["timing"], m["stats"] = timing(t)
         return m
 
 
@@ -1036,8 +1208,7 @@ def build_prompt(t, obs, world=None):
     lines += [f"  {i + 1}. {h}" for i, h in enumerate(t.history)] or ["  none yet"]
     if t.goal and world.facts:
         lines.append("GOAL CHECK (the goal you gave, checked against the world right now):")
-        for c in t.goal:
-            ok, text = world.check(c)
+        for c, (ok, text) in zip(t.goal, check_goal(t.goal, world, t.done)):
             lines.append(f"  - {show_goal(c)}: {'REACHED' if ok else 'NOT FOUND YET' if ok is None else 'NOT YET'} ({text})")
     lines.append("Reply with the JSON.")
     return "\n".join(lines)
@@ -1064,13 +1235,36 @@ async def handler(ws):
         if result["error"]:
             print("  error:", result["error"])
         print(f"  -> {result['kind']}", show(result["next"]) if result.get("next") else result["reply"])
+        if result.get("timing"):
+            print("  time:", result["timing"])
+            record_timing(result)
         await ws.send(json.dumps(result))
+
+
+def record_timing(result):
+    """Appends the time record of a finished task to .local/timing.jsonl (one JSON object per line)."""
+    try:
+        os.makedirs(os.path.join(BASE_DIR, ".local"), exist_ok=True)
+        with open(os.path.join(BASE_DIR, ".local", "timing.jsonl"), "a") as f:
+            f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "model": BACKEND.name, "feedback": FEEDBACK,
+                                "result": result["kind"], **result["stats"]}) + "\n")
+    except OSError as e:
+        print("  (timing not saved:", e, ")")
+
+
+def warm_up():
+    try:
+        print(f"Model loaded in {BACKEND.warm_up():.1f} s; the first command won't have to wait for it.")
+    except Exception as e:     # not fatal: the first command loads the model instead
+        print(f"Could not load the model ahead of time ({e}); the first command will be slower.")
 
 
 async def serve():
     import websockets  # imported here so --test and --selftest work without it
     async with websockets.serve(handler, HOST, PORT, max_size=20_000_000):
         print(f"VLM bridge on ws://{HOST}:{PORT} using {BACKEND.name} (feedback: {FEEDBACK})")
+        if hasattr(BACKEND, "warm_up"):
+            asyncio.get_running_loop().run_in_executor(None, warm_up)
         await asyncio.Future()
 
 
@@ -1177,12 +1371,12 @@ def selftest():
     quiet = lambda *a: None
 
     b = Brain(scripted(
-        {"status": "working", "reply": "On it.", "plan": [{"action": "move_to", "target": "basketball"},
+        {"status": "working", "reply": "On it.", "plan": [{"action": "move_to", "target": "main_hall"},
                                                           {"action": "pick", "target": "basketball"}]},
         {"status": "working", "plan": [{"action": "pick", "target": "Basketball"}]},
         {"status": "done", "reply": "Got it.", "plan": []}), log=quiet)
     m = b.handle({**obs, "type": "command", "text": "pick up the basketball"})
-    assert m["kind"] == "act" and m["next"]["target"] == "basketball", m
+    assert m["kind"] == "act" and m["next"]["target"] == "main_hall", m
     m = b.handle({**obs, "type": "result", "ok": True})
     assert m["kind"] == "act" and m["next"]["action"] == "pick" and m["step"] == 1, m
     m = b.handle({**obs, "type": "result", "ok": True, "holding": "basketball"})
@@ -1399,6 +1593,145 @@ def selftest():
     assert "already holds basketball" in w.foresee([{"action": "pick", "target": "locker_key"}])
     assert w.foresee([{"action": "explore", "target": ""}, {"action": "pick", "target": "ghost"}]) is None
 
+    # ---- simple commands: one model call each, and "done" only when it is true
+    def run(brain, command, *worlds):
+        """Sends the command with the first world, then reports success with each of the following ones."""
+        m = brain.handle({**worlds[0], "type": "command", "text": command})
+        for w in worlds[1:]:
+            assert m["kind"] == "act", m
+            m = brain.handle({**w, "type": "result", "ok": True})
+        return m
+    def model(*replies):
+        calls.clear()
+        it = iter(replies)
+        return lambda s, p, i: calls.append(p) or json.dumps(next(it))
+    shut, opened = seeing(cabinet, shelf), seeing({**cabinet, "open": True}, shelf)
+    open_step, close_step = {"action": "open", "target": "trophy_cabinet"}, {"action": "close", "target": "trophy_cabinet"}
+
+    # "turn around": the goal is an action the robot must have carried out, so one call and one rotation are enough
+    turn = {"goal": [{"did": "rotate"}], "plan": [{"action": "rotate", "degrees": 180}]}
+    b = Brain(model(turn), feedback="after_plan", log=quiet)
+    m = run(b, "turn around", shut, shut)
+    assert m["kind"] == "done" and len(calls) == 1 and "'rotate' was carried out" in m["reply"], (m, len(calls))
+    # ... and saying "done" before turning is refused
+    b = Brain(model({**turn, "status": "done", "plan": []}, turn), feedback="after_plan", log=quiet)
+    m = b.handle({**shut, "type": "command", "text": "turn around"})
+    assert m["kind"] == "act" and m["next"]["action"] == "rotate" and "'rotate' has not been carried out yet" in calls[-1], m
+    # ... also when the model gives no goal at all: asked once whether it means it, then taken at its word
+    b = Brain(model({"status": "done", "plan": []}, turn), log=quiet)
+    m = b.handle({**shut, "type": "command", "text": "turn around"})
+    assert m["kind"] == "act" and "has not done anything" in calls[-1], m
+    b = Brain(model({"status": "done"}, {"status": "done", "reply": "Hello!"}), log=quiet)
+    m = b.handle({**shut, "type": "command", "text": "hello"})
+    assert m["kind"] == "done" and m["reply"] == "Hello!" and m["stats"]["rejected_replies"] == 1, m
+
+    # "open it, then close it": a cabinet that is closed already does not make this done
+    sequence = {"goal": [{"did": "open", "target": "trophy_cabinet"}, {"closed": "trophy_cabinet"}]}
+    b = Brain(model({**sequence, "status": "done", "plan": []}, {**sequence, "plan": [open_step, close_step]}),
+              feedback="after_plan", log=quiet)
+    m = run(b, "open the cabinet, then close it", shut, opened, shut)
+    assert m["kind"] == "done" and len(calls) == 2 and "'open trophy_cabinet' was carried out" in m["reply"], (m, len(calls))
+    assert b.task is None and m["stats"]["actions"] == 2 and m["stats"]["rejected_replies"] == 1, m["stats"]
+    # ... a goal that says open AND closed is read as that sequence instead of never being reachable
+    both_states = [{"open": "trophy_cabinet"}, {"closed": "trophy_cabinet"}]
+    assert clean_goal(both_states, {}) == clean_goal(sequence["goal"], {}), clean_goal(both_states, {})
+    b = Brain(model({"goal": both_states, "plan": [open_step, close_step]}), feedback="after_plan", log=quiet)
+    m = run(b, "open the cabinet, then close it", shut, opened, shut)
+    assert m["kind"] == "done" and len(calls) == 1, (m, len(calls))
+    # ... open, close, open again: repeating a step is fine when the task asks for it
+    again = clean_goal(both_states + [{"open": "trophy_cabinet"}], {})
+    assert [show_goal(c) for c in again] == ["did open trophy_cabinet", "did close trophy_cabinet", "open trophy_cabinet"], again
+    b = Brain(model({"goal": both_states + [{"open": "trophy_cabinet"}], "plan": [open_step, close_step, open_step]}),
+              feedback="after_plan", log=quiet)
+    m = run(b, "open the cabinet, close it, then open it again", shut, opened, shut, opened)
+    assert m["kind"] == "done" and len(calls) == 1 and m["step"] == 3, (m, len(calls))
+    # ... "did" entries count in order: closing before opening is not "open, then close"
+    w = World(shut)
+    order = clean_goal([{"did": "open", "target": "trophy_cabinet"}, {"did": "close", "target": "trophy_cabinet"}], w.known)
+    assert [ok for ok, _ in check_goal(order, w, [("close", "trophy_cabinet"), ("open", "trophy_cabinet")])] == [True, False]
+    assert all(ok for ok, _ in check_goal(order, w, [("open", "trophy_cabinet"), ("close", "trophy_cabinet")]))
+    assert check_goal(clean_goal([{"did": "pick", "target": "ghost"}], w.known), w)[0][0] is None    # not seen yet
+    assert clean_goal([{"did": "fly"}], {}) == []
+
+    # "open the cabinet" stays open (no clean-up close), and is done at once when it is open already
+    b = Brain(model({"goal": [{"open": "trophy_cabinet"}], "plan": [open_step]}), feedback="after_plan", log=quiet)
+    m = run(b, "open the trophy cabinet", shut, opened)
+    assert m["kind"] == "done" and len(calls) == 1 and m["step"] == 1, (m, len(calls))
+    b = Brain(model({"goal": [{"open": "trophy_cabinet"}], "status": "done", "reply": "It is already open."}), log=quiet)
+    m = b.handle({**opened, "type": "command", "text": "open the trophy cabinet"})
+    assert m["kind"] == "done" and m["reply"] == "It is already open.", m
+
+    # a reply that says "done" can't swap in another goal: it is held to the one it was working towards
+    held_ball = seeing(ball, rack, level, holding="basketball")
+    b = Brain(model({"goal": [{"object": "basketball", "in": "ball_rack"}], "plan": [{"action": "pick", "target": "basketball"}]},
+                    {"goal": [{"holding": "basketball"}], "status": "done"},
+                    {"goal": [{"object": "basketball", "in": "ball_rack"}], "plan": [{"action": "place", "target": "ball_rack"}]}),
+              log=quiet)
+    m = run(b, "put the basketball on the rack", seeing(ball, rack, level), held_ball)
+    assert m["kind"] == "act" and m["next"]["action"] == "place" and "not in/on ball_rack" in calls[-1], m
+    # ... but after an answer from the user the goal may change
+    b = Brain(model({"goal": [{"object": "basketball", "in": "ball_rack"}], "status": "ask", "question": "Rack or hand?"},
+                    {"goal": [{"holding": "basketball"}], "status": "done", "reply": "Here it is."}), log=quiet)
+    b.handle({**held_ball, "type": "command", "text": "the basketball"})
+    m = b.handle({**held_ball, "type": "answer", "text": "just hold it"})
+    assert m["kind"] == "done" and m["reply"] == "Here it is.", m
+
+    # "go to the treadmill" with two of them: one call to ask, one to walk there, and arriving ends the task
+    t1, t2 = fact("treadmill_1", distance=9.0), fact("treadmill_2", distance=11.0)
+    things = [{"words": "the treadmill", "ids": ["treadmill_1", "treadmill_2"]}]
+    b = Brain(model({"things": things, "goal": [], "status": "ask", "question": "Treadmill 1 or 2?", "plan": []},
+                    {"things": things, "goal": [{"robot_at": "treadmill_2"}], "plan": [{"action": "move_to", "target": "treadmill_2"}]}),
+              feedback="after_plan", log=quiet)
+    m = b.handle({**seeing(t1, t2), "type": "command", "text": "go to the treadmill"})
+    assert m["kind"] == "ask", m
+    m = b.handle({**seeing(t1, t2), "type": "answer", "text": "2"})
+    m = b.handle({**seeing(t1, {**t2, "distance": 2.9}), "type": "result", "ok": True})   # stopped at its approach spot
+    assert m["kind"] == "done" and len(calls) == 2 and "the robot is at treadmill_2" in m["reply"], (m, len(calls))
+
+    # ... the same when the model doesn't ask but wants the robot at both of them: the bridge asks, without another call
+    b = Brain(model({"things": things, "goal": [{"robot_at": "treadmill_1"}, {"robot_at": "treadmill_2"}],
+                     "plan": [{"action": "move_to", "target": "treadmill_1"}]},
+                    {"things": things, "goal": [{"robot_at": "treadmill_2"}], "plan": [{"action": "robot_at", "target": "treadmill_2"}]}),
+              feedback="after_plan", log=quiet)
+    m = b.handle({**seeing(t1, t2), "type": "command", "text": "go to the treadmill"})
+    assert m["kind"] == "ask" and "treadmill_1 or treadmill_2" in m["reply"] and len(calls) == 1, m
+    m = b.handle({**seeing(t1, t2), "type": "answer", "text": "the second one"})
+    assert m["next"] == {"action": "move_to", "target": "treadmill_2", "degrees": 0.0, "seconds": 0.0}, m   # "robot_at" as an action = move_to
+    # ... and "open, closed, did open" (what a model wrote for open, close, open again) ends open, not closed
+    mixed = clean_goal([{"did": "open", "target": "trophy_cabinet"}, {"closed": "trophy_cabinet"}, {"did": "open", "target": "trophy_cabinet"}], {})
+    assert [show_goal(c) for c in mixed] == ["did open trophy_cabinet", "did close trophy_cabinet", "did open trophy_cabinet"], mixed
+
+    # a "move_to X" straight before an action on X is dropped (the action walks there itself): fewer robot actions
+    r = parse_reply(json.dumps({"plan": [{"action": "move_to", "target": "basketball"}, {"action": "pick", "target": "basketball"},
+                                         {"action": "move_to", "target": "ball_rack"}, {"action": "place", "target": "ball_rack"}]}),
+                    ["basketball", "ball_rack"])
+    assert [show(x) for x in r["plan"]] == ["pick basketball", "place ball_rack"], r["plan"]
+    r = parse_reply(json.dumps({"plan": [{"action": "move_to", "target": "ball_rack"}, {"action": "pick", "target": "basketball"}]}),
+                    ["basketball", "ball_rack"])
+    assert len(r["plan"]) == 2, r["plan"]                            # another target: the walk is kept
+    r = parse_reply(json.dumps({"goal": [{"did": "move_to", "target": "ball_rack"}], "plan": [
+        {"action": "move_to", "target": "ball_rack"}, {"action": "open", "target": "ball_rack"}]}), ["ball_rack"])
+    assert len(r["plan"]) == 2, r["plan"]                            # the user asked for that walk
+    b = Brain(model({"goal": [{"object": "basketball", "in": "ball_rack"}], "plan": [
+        {"action": "move_to", "target": "basketball"}, {"action": "pick", "target": "basketball"},
+        {"action": "move_to", "target": "ball_rack"}, {"action": "place", "target": "ball_rack"}]}), feedback="after_plan", log=quiet)
+    m = run(b, "put the basketball on the rack", seeing(ball, rack, level), held_ball,
+            seeing({**ball, "inside": "ball_rack_top"}, rack, level))
+    assert m["kind"] == "done" and m["step"] == 2 and len(calls) == 1, (m, len(calls))
+
+    # where the time went is reported with every finished task: model (load / prompt / output), robot, user, rejections
+    class Timed:
+        def __call__(self, s, p, i):
+            self.last_stats = {"load_duration": 2_000_000_000, "prompt_eval_count": 1500, "prompt_eval_duration": 3_000_000_000,
+                               "eval_count": 80, "eval_duration": 1_000_000_000}
+            return json.dumps(turn)
+    b = Brain(Timed(), feedback="after_plan", log=quiet)
+    m = run(b, "turn around", shut, shut)
+    s = m["stats"]
+    assert (s["model_calls"], s["load_s"], s["prompt_s"], s["output_s"], s["prompt_tokens"]) == (1, 2.0, 3.0, 1.0, 1500), s
+    assert s["actions"] == 1 and s["failed_actions"] == 0 and s["rejected_replies"] == 0 and "loading weights 2" in m["timing"], m["timing"]
+    assert "timing" not in b.handle({**shut, "type": "command", "text": "turn around"})          # only when a task ends
+
     # two unusable replies in a row: ask the user rather than keep them waiting
     b = Brain(lambda s, p, i: "no json here", log=quiet)
     m = b.handle({**obs, "type": "command", "text": "tidy up"})
@@ -1417,7 +1750,7 @@ def selftest():
     calls = []
     def counting(s, p, i):
         calls.append(p)
-        return json.dumps({"plan": [{"action": "move_to", "target": "basketball"}, {"action": "pick", "target": "basketball"}]})
+        return json.dumps({"plan": [{"action": "move_to", "target": "ball_rack"}, {"action": "pick", "target": "basketball"}]})
     b = Brain(counting, feedback="after_plan", log=quiet)
     b.handle({**obs, "type": "command", "text": "pick up the basketball"})
     m = b.handle({**obs, "type": "result", "ok": True})
@@ -1440,13 +1773,14 @@ def selftest():
 
 
 def main():
-    global BACKEND, FEEDBACK
+    global BACKEND, FEEDBACK, PORT
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=os.path.join(BASE_DIR, "vlm.properties"), help="settings file")
     p.add_argument("--backend", choices=["ollama", "openrouter"], help="override 'backend' from the settings")
     p.add_argument("--model", help="override the model (Ollama: qwen, llama, or a full model tag)")
     p.add_argument("--feedback", choices=["every_step", "after_plan"],
                    help="every_step: the model looks again after every action; after_plan: only after a failure")
+    p.add_argument("--port", type=int, default=PORT, help="WebSocket port Unity connects to")
     p.add_argument("--test", help="plan one instruction without Unity")
     p.add_argument("--known", default="main_hall,locker_room_a,locker_room_b,locker_room_a_door,"
                                       "locker_room_b_door,basketball,ball_rack,ball_cart,bench,"
@@ -1470,6 +1804,7 @@ def main():
     if args.model:
         props[f"{props.get('backend', 'ollama').strip().lower()}.model"] = args.model
     FEEDBACK = args.feedback or props.get("feedback", "every_step")
+    PORT = args.port
     BACKEND = make_backend(props)
 
     if args.test:

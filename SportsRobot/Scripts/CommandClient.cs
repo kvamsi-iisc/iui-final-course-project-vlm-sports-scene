@@ -25,6 +25,7 @@ using UnityEngine.UI;
     public string reply, raw, error;
     public RobotAction next;            // the one action to run now (kind == act)
     public int step, maxSteps, failures, maxFailures;
+    public string timing;               // when a task ends: where its time went (model, robot, waiting for the user)
 }
 
 // One known object as plain data, so the bridge can check a goal against the world without parsing sentences.
@@ -186,6 +187,7 @@ public class CommandClient : MonoBehaviour
                 state = State.Idle;
                 stopRequested = false;
                 Log(m.kind == "done" ? "<color=green>Done.</color>" : "<color=red>Stopped without finishing.</color>");
+                if (!string.IsNullOrEmpty(m.timing)) Log($"<color=#999>Time: <noparse>{m.timing}</noparse></color>");
                 Visual(m.kind == "done" ? RobotVisuals.Mood.Idle : RobotVisuals.Mood.Error, m.kind == "done" ? "" : "stopped");
                 SetStatus($"Ready{(counters.Length > 0 ? " | last task: " + counters : "")}");
                 break;
