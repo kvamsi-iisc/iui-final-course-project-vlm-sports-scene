@@ -17,7 +17,9 @@ RobotAgent.cs runs that ONE action (walk, pick, place, open, explore...) and rep
 - **Feedback loop:** By default, `feedback = after_plan` executes the planned steps without a model call between successful actions. Unity still checks each action; the model is asked again if a step fails, if the plan reaches a step it cannot run yet, or if the plan ends with the goal not reached. Use `--feedback every_step` for visual checking after every action.
 - **The model states the goal, the world checks it:** every reply carries a `goal`, the task as checkable facts
   (`{"object": "gold_medal", "in": "trophy_cabinet"}`, `{"holding": "soccer_ball"}`, `{"closed": "trophy_cabinet"}`).
-  Understanding the user's words is the model's job; the bridge only compares that goal with the world data Unity
+  For something that must happen rather than be true at the end, the goal uses `{"did": "rotate"}` or
+  `[{"did": "open", "target": "trophy_cabinet"}, {"closed": "trophy_cabinet"}]` ("open it, then close it"); these are
+  checked, in order, against the actions that really succeeded. Understanding the user's words is the model's job; the bridge only compares that goal with the world data Unity
   sends (`facts`). There are no keyword rules about commands in the bridge, so synonyms and new phrasings need no code.
 - **Find first, then act:** a plan may contain search steps followed by steps for a thing not seen yet
   (`look_around`, `explore locker_room_a`, `pick gold_medal`). Steps naming an unseen object wait; the search stops
@@ -207,7 +209,12 @@ To change the room, edit `SportsRobot/Layouts/sports_room.json` (instructions ar
 - `stop` while it is working
 
 ## Tips
-- First call is slow while the model loads; send one warm-up command before presenting.
+- The bridge loads the Ollama model when it starts and prints how long that took, so the first command doesn't wait for it.
+  After `ollama.keep_alive` (5m) without a command the model is unloaded and the next command pays the load time again.
+- Every finished task prints a `time:` line (also shown in the Unity log) and appends a record to `.local/timing.jsonl`:
+  model time split into loading weights / reading the prompt / writing the reply, robot time, time waiting for the
+  user's answers, model replies the bridge sent back, plans stopped early, and failed actions. Each model call is also
+  printed with its token counts.
 - The default `after_plan` mode reduces model calls. For debugging, use `--feedback every_step`; each successful action then incurs another model call.
 - `temperature: 0` keeps answers repeatable for the demo.
 - If plans fail often, add another example to `SYSTEM_PROMPT` matching that case.
